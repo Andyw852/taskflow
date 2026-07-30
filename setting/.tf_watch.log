@@ -6745,3 +6745,305 @@ FAILED / NEEDS ATTENTION:
   [band] qHPC36-D6h             S4_HSE     OUTCAR incomplete
   [band] qTPC24-Mg1             S1c_fine   c 未收敛 [unknown] 还没有完成的离子步
 [13:45:56] 无变化
+监控模式：每 300 秒刷新（auto-fetch + auto-advance 开；配置改动自动重载），Ctrl+C 退出。
+auto-fetch qTPC24: step1_std_opt → /home/wangchao/Fullerene_Network/C24/qTPC24/elastic/result
+auto Mg2C60[band|S4.1_plot]: 已生成 /public/home/wangchao/Fullerene_Network/fullerene_network/test/Mg2C60/band/step4_band_plot（band_summary.json）
+auto qTP2C60[band|S4.1_plot]: 已生成 /public/home/wangchao/Fullerene_Network/fullerene_network/test/qTP2C60/band/step4_band_plot（band_summary.json）
+auto qHPC20[elastic|S2_elastic]: gen 完成。[DONE] step2_elastic 已生成，可用 vasp_std 提交
+auto qHPC20[elastic|S2_elastic]: 已提交 qHPC20-elastic-S2_elastic (jobid=3587485)
+auto qHPC24[elastic|S2_elastic]: gen 完成。[DONE] step2_elastic 已生成，可用 vasp_std 提交
+auto qHPC24[elastic|S2_elastic]: 已提交 qHPC24-elastic-S2_elastic (jobid=3587488)
+auto qTPC20-b[elastic|S2_elastic]: gen 完成。[DONE] step2_elastic 已生成，可用 vasp_std 提交
+auto qTPC20-b[elastic|S2_elastic]: 已提交 qTPC20-b-elastic-S2_elastic (jobid=3587491)
+auto qTPC20-r[elastic|S2_elastic]: gen 完成。[DONE] step2_elastic 已生成，可用 vasp_std 提交
+auto qTPC20-r[elastic|S2_elastic]: 已提交 qTPC20-r-elastic-S2_elastic (jobid=3587492)
+auto qTPC24[elastic|S2_elastic]: gen 完成。[DONE] step2_elastic 已生成，可用 vasp_std 提交
+auto qTPC24[elastic|S2_elastic]: 已提交 qTPC24-elastic-S2_elastic (jobid=3587494)
+== band（能带计算，12 个材料）==
++-------------+------+------+-----+----------+-----------+------------+-------------+---------+-------------+
+| Material    | tt   | hpc  | dim | S1_relax | S2_static | S3_WAVECAR | S3.1_plot   | S4_HSE  | S4.1_plot   |
++=============+======+======+=====+==========+===========+============+=============+=========+=============+
+| Mg2C60      | band | jzzn | 3D  | done     | done      | done       | completed   | done    | not started |
+|             |      |      |     | -        | -         | -          | -           | -       | -           |
+| qHPC20      | band | jzzn | 2D  | done     | done      | done       | completed   | done    | completed   |
+|             |      |      |     | -        | -         | -          | -           | -       | -           |
+| qHPC24      | band | jzzn | 2D  | done     | done      | done       | completed   | done    | completed   |
+|             |      |      |     | -        | -         | -          | -           | -       | -           |
+| qHPC36-D6h  | band | jzzn | 2D  | done     | done      | done       | completed   | error   | not started |
+|             |      |      |     | -        | -         | -          | -           | -       | -           |
+| qHPC60      | band | jzzn | 2D  | done     | done      | done       | completed   | error   | not started |
+|             |      |      |     | -        | -         | -          | -           | -       | -           |
+| qTP1C60     | band | jzzn | 2D  | done     | done      | done       | completed   | done    | completed   |
+|             |      |      |     | -        | -         | -          | -           | -       | -           |
+| qTP2C36-D2d | band | jzzn | 2D  | done     | done      | done       | completed   | done    | completed   |
+|             |      |      |     | -        | -         | -          | -           | -       | -           |
+| qTP2C60     | band | jzzn | 2D  | done     | done      | done       | completed   | done    | not started |
+|             |      |      |     | -        | -         | -          | -           | -       | -           |
+| qTPC20-b    | band | jzzn | 2D  | done     | done      | done       | completed   | done    | completed   |
+|             |      |      |     | -        | -         | -          | -           | -       | -           |
+| qTPC20-r    | band | jzzn | 2D  | done     | done      | done       | completed   | done    | completed   |
+|             |      |      |     | -        | -         | -          | -           | -       | -           |
+| qTPC24      | band | jzzn | 2D  | done     | done      | done       | completed   | done    | completed   |
+|             |      |      |     | -        | -         | -          | -           | -       | -           |
+| qTPC24-Mg1  | band | jzzn | 2D  | error    | waiting   | waiting    | not started | waiting | not started |
+|             |      |      |     | S1c_fine | -         | -          | -           | -       | -           |
++-------------+------+------+-----+----------+-----------+------------+-------------+---------+-------------+
+Total: 12 | Done: 7 | Waiting: 0 | Actionable: 5
+
+FAILED / NEEDS ATTENTION:
+  [band] qHPC36-D6h             S4_HSE     OUTCAR incomplete
+  [band] qHPC60                 S4_HSE     OUTCAR incomplete
+  [band] qTPC24-Mg1             S1c_fine   c 未收敛 [unknown] 还没有完成的离子步
+
+== elastic（弹性常数计算，5 个材料）==
++----------+---------+------+-----+--------+------------+-------------+
+| Material | tt      | hpc  | dim | S1_opt | S2_elastic | S3_post     |
++==========+=========+======+=====+========+============+=============+
+| qHPC20   | elastic | jzzn | 2D  | done   | waiting    | not started |
+|          |         |      |     | -      | -          | -           |
+| qHPC24   | elastic | jzzn | 2D  | done   | waiting    | not started |
+|          |         |      |     | -      | -          | -           |
+| qTPC20-b | elastic | jzzn | 2D  | done   | waiting    | not started |
+|          |         |      |     | -      | -          | -           |
+| qTPC20-r | elastic | jzzn | 2D  | done   | waiting    | not started |
+|          |         |      |     | -      | -          | -           |
+| qTPC24   | elastic | jzzn | 2D  | done   | waiting    | not started |
+|          |         |      |     | -      | -          | -           |
++----------+---------+------+-----+--------+------------+-------------+
+Total: 5 | Done: 0 | Waiting: 0 | Actionable: 5
+
+== band（能带计算，12 个材料）==
++-------------+------+------+-----+----------+-----------+------------+-------------+---------+-------------+
+| Material    | tt   | hpc  | dim | S1_relax | S2_static | S3_WAVECAR | S3.1_plot   | S4_HSE  | S4.1_plot   |
++=============+======+======+=====+==========+===========+============+=============+=========+=============+
+| Mg2C60      | band | jzzn | 3D  | done     | done      | done       | completed   | done    | completed   |
+|             |      |      |     | -        | -         | -          | -           | -       | -           |
+| qHPC20      | band | jzzn | 2D  | done     | done      | done       | completed   | done    | completed   |
+|             |      |      |     | -        | -         | -          | -           | -       | -           |
+| qHPC24      | band | jzzn | 2D  | done     | done      | done       | completed   | done    | completed   |
+|             |      |      |     | -        | -         | -          | -           | -       | -           |
+| qHPC36-D6h  | band | jzzn | 2D  | done     | done      | done       | completed   | error   | not started |
+|             |      |      |     | -        | -         | -          | -           | -       | -           |
+| qHPC60      | band | jzzn | 2D  | done     | done      | done       | completed   | error   | not started |
+|             |      |      |     | -        | -         | -          | -           | -       | -           |
+| qTP1C60     | band | jzzn | 2D  | done     | done      | done       | completed   | done    | completed   |
+|             |      |      |     | -        | -         | -          | -           | -       | -           |
+| qTP2C36-D2d | band | jzzn | 2D  | done     | done      | done       | completed   | done    | completed   |
+|             |      |      |     | -        | -         | -          | -           | -       | -           |
+| qTP2C60     | band | jzzn | 2D  | done     | done      | done       | completed   | done    | completed   |
+|             |      |      |     | -        | -         | -          | -           | -       | -           |
+| qTPC20-b    | band | jzzn | 2D  | done     | done      | done       | completed   | done    | completed   |
+|             |      |      |     | -        | -         | -          | -           | -       | -           |
+| qTPC20-r    | band | jzzn | 2D  | done     | done      | done       | completed   | done    | completed   |
+|             |      |      |     | -        | -         | -          | -           | -       | -           |
+| qTPC24      | band | jzzn | 2D  | done     | done      | done       | completed   | done    | completed   |
+|             |      |      |     | -        | -         | -          | -           | -       | -           |
+| qTPC24-Mg1  | band | jzzn | 2D  | error    | waiting   | waiting    | not started | waiting | not started |
+|             |      |      |     | S1c_fine | -         | -          | -           | -       | -           |
++-------------+------+------+-----+----------+-----------+------------+-------------+---------+-------------+
+Total: 12 | Done: 9 | Waiting: 0 | Actionable: 3
+
+FAILED / NEEDS ATTENTION:
+  [band] qHPC36-D6h             S4_HSE     OUTCAR incomplete
+  [band] qHPC60                 S4_HSE     OUTCAR incomplete
+  [band] qTPC24-Mg1             S1c_fine   c 未收敛 [unknown] 还没有完成的离子步
+
+== elastic（弹性常数计算，5 个材料）==
++----------+---------+------+-----+--------+----------------------+-------------+
+| Material | tt      | hpc  | dim | S1_opt | S2_elastic           | S3_post     |
++==========+=========+======+=====+========+======================+=============+
+| qHPC20   | elastic | jzzn | 2D  | done   | pd                   | not started |
+|          |         |      |     | -      | 3587485 ((Priority)) | -           |
+| qHPC24   | elastic | jzzn | 2D  | done   | pd                   | not started |
+|          |         |      |     | -      | 3587487 ((Priority)) | -           |
+| qTPC20-b | elastic | jzzn | 2D  | done   | pd                   | not started |
+|          |         |      |     | -      | 3587490 ((Priority)) | -           |
+| qTPC20-r | elastic | jzzn | 2D  | done   | pd                   | not started |
+|          |         |      |     | -      | 3587492 ((Priority)) | -           |
+| qTPC24   | elastic | jzzn | 2D  | done   | pd                   | not started |
+|          |         |      |     | -      | 3587494 ((Priority)) | -           |
++----------+---------+------+-----+--------+----------------------+-------------+
+Total: 5 | Done: 0 | Waiting: 5 | Actionable: 0
+
+监控模式：每 300 秒刷新（auto-fetch + auto-advance 开；配置改动自动重载），Ctrl+C 退出。
+== band（能带计算，12 个材料）==
++-------------+------+------+-----+----------+-----------+------------+-------------+---------+-------------+
+| Material    | tt   | hpc  | dim | S1_relax | S2_static | S3_WAVECAR | S3.1_plot   | S4_HSE  | S4.1_plot   |
++=============+======+======+=====+==========+===========+============+=============+=========+=============+
+| Mg2C60      | band | jzzn | 3D  | done     | done      | done       | completed   | done    | completed   |
+|             |      |      |     | -        | -         | -          | -           | -       | -           |
+| qHPC20      | band | jzzn | 2D  | done     | done      | done       | completed   | done    | completed   |
+|             |      |      |     | -        | -         | -          | -           | -       | -           |
+| qHPC24      | band | jzzn | 2D  | done     | done      | done       | completed   | done    | completed   |
+|             |      |      |     | -        | -         | -          | -           | -       | -           |
+| qHPC36-D6h  | band | jzzn | 2D  | done     | done      | done       | completed   | error   | not started |
+|             |      |      |     | -        | -         | -          | -           | -       | -           |
+| qHPC60      | band | jzzn | 2D  | done     | done      | done       | completed   | error   | not started |
+|             |      |      |     | -        | -         | -          | -           | -       | -           |
+| qTP1C60     | band | jzzn | 2D  | done     | done      | done       | completed   | done    | completed   |
+|             |      |      |     | -        | -         | -          | -           | -       | -           |
+| qTP2C36-D2d | band | jzzn | 2D  | done     | done      | done       | completed   | done    | completed   |
+|             |      |      |     | -        | -         | -          | -           | -       | -           |
+| qTP2C60     | band | jzzn | 2D  | done     | done      | done       | completed   | done    | completed   |
+|             |      |      |     | -        | -         | -          | -           | -       | -           |
+| qTPC20-b    | band | jzzn | 2D  | done     | done      | done       | completed   | done    | completed   |
+|             |      |      |     | -        | -         | -          | -           | -       | -           |
+| qTPC20-r    | band | jzzn | 2D  | done     | done      | done       | completed   | done    | completed   |
+|             |      |      |     | -        | -         | -          | -           | -       | -           |
+| qTPC24      | band | jzzn | 2D  | done     | done      | done       | completed   | done    | completed   |
+|             |      |      |     | -        | -         | -          | -           | -       | -           |
+| qTPC24-Mg1  | band | jzzn | 2D  | error    | waiting   | waiting    | not started | waiting | not started |
+|             |      |      |     | S1c_fine | -         | -          | -           | -       | -           |
++-------------+------+------+-----+----------+-----------+------------+-------------+---------+-------------+
+Total: 12 | Done: 9 | Waiting: 0 | Actionable: 3
+
+FAILED / NEEDS ATTENTION:
+  [band] qHPC36-D6h             S4_HSE     OUTCAR incomplete
+  [band] qHPC60                 S4_HSE     OUTCAR incomplete
+  [band] qTPC24-Mg1             S1c_fine   c 未收敛 [unknown] 还没有完成的离子步
+
+== elastic（弹性常数计算，5 个材料）==
++----------+---------+------+-----+--------+----------------------+-------------+
+| Material | tt      | hpc  | dim | S1_opt | S2_elastic           | S3_post     |
++==========+=========+======+=====+========+======================+=============+
+| qHPC20   | elastic | jzzn | 2D  | done   | pd                   | not started |
+|          |         |      |     | -      | 3587485 ((Priority)) | -           |
+| qHPC24   | elastic | jzzn | 2D  | done   | pd                   | not started |
+|          |         |      |     | -      | 3587487 ((Priority)) | -           |
+| qTPC20-b | elastic | jzzn | 2D  | done   | pd                   | not started |
+|          |         |      |     | -      | 3587490 ((Priority)) | -           |
+| qTPC20-r | elastic | jzzn | 2D  | done   | pd                   | not started |
+|          |         |      |     | -      | 3587492 ((Priority)) | -           |
+| qTPC24   | elastic | jzzn | 2D  | done   | pd                   | not started |
+|          |         |      |     | -      | 3587494 ((Priority)) | -           |
++----------+---------+------+-----+--------+----------------------+-------------+
+Total: 5 | Done: 0 | Waiting: 5 | Actionable: 0
+
+[16:48:02] 配置变更但重载失败（错误：类型 band 在全局 tf.yaml 里没有对应定义（继承不到 steps）。
+来源文件：/home/wangchao/Fullerene_Network/Mg2C60/project_setting/tf_Mg2C60.yaml
+通常是该文件的类型名和全局 tf.yaml 不一致（如 bd 改名 band 后没同步）。
+全局可用的类型名：（无）。修正命令：
+  sed -i 's/^  band:/  band:/' /home/wangchao/Fullerene_Network/Mg2C60/project_setting/tf_Mg2C60.yaml），沿用旧配置继续监控。
+[16:48:09] 无变化
+[16:53:39] 无变化
+[16:59:02] 无变化
+[17:04:34] 无变化
+[17:09:55] 无变化
+[17:15:24] 无变化
+[17:20:56] 无变化
+[17:26:31] 无变化
+[17:32:03] 无变化
+[17:37:29] 无变化
+[17:43:01] 无变化
+[17:48:30] 无变化
+[17:53:55] 无变化
+[17:59:18] 无变化
+[18:04:42] 无变化
+[18:10:09] 无变化
+[18:15:37] 无变化
+[18:21:04] 无变化
+[18:26:33] 无变化
+[18:32:01] 无变化
+[18:37:25] 无变化
+[18:42:51] 无变化
+[18:48:18] 无变化
+[18:53:46] 无变化
+[18:59:15] 无变化
+[19:04:43] 无变化
+== band（能带计算，12 个材料）==
++-------------+------+------+-----+----------+-----------+------------+-------------+---------+-------------+
+| Material    | tt   | hpc  | dim | S1_relax | S2_static | S3_WAVECAR | S3.1_plot   | S4_HSE  | S4.1_plot   |
++=============+======+======+=====+==========+===========+============+=============+=========+=============+
+| Mg2C60      | band | jzzn | 3D  | done     | done      | done       | completed   | done    | completed   |
+|             |      |      |     | -        | -         | -          | -           | -       | -           |
+| qHPC20      | band | jzzn | 2D  | done     | done      | done       | completed   | done    | completed   |
+|             |      |      |     | -        | -         | -          | -           | -       | -           |
+| qHPC24      | band | jzzn | 2D  | done     | done      | done       | completed   | done    | completed   |
+|             |      |      |     | -        | -         | -          | -           | -       | -           |
+| qHPC36-D6h  | band | jzzn | 2D  | done     | done      | done       | completed   | error   | not started |
+|             |      |      |     | -        | -         | -          | -           | -       | -           |
+| qHPC60      | band | jzzn | 2D  | done     | done      | done       | completed   | error   | not started |
+|             |      |      |     | -        | -         | -          | -           | -       | -           |
+| qTP1C60     | band | jzzn | 2D  | done     | done      | done       | completed   | done    | completed   |
+|             |      |      |     | -        | -         | -          | -           | -       | -           |
+| qTP2C36-D2d | band | jzzn | 2D  | done     | done      | done       | completed   | done    | completed   |
+|             |      |      |     | -        | -         | -          | -           | -       | -           |
+| qTP2C60     | band | jzzn | 2D  | done     | done      | done       | completed   | done    | completed   |
+|             |      |      |     | -        | -         | -          | -           | -       | -           |
+| qTPC20-b    | band | jzzn | 2D  | done     | done      | done       | completed   | done    | completed   |
+|             |      |      |     | -        | -         | -          | -           | -       | -           |
+| qTPC20-r    | band | jzzn | 2D  | done     | done      | done       | completed   | done    | completed   |
+|             |      |      |     | -        | -         | -          | -           | -       | -           |
+| qTPC24      | band | jzzn | 2D  | done     | done      | done       | completed   | done    | completed   |
+|             |      |      |     | -        | -         | -          | -           | -       | -           |
+| qTPC24-Mg1  | band | jzzn | 2D  | error    | waiting   | waiting    | not started | waiting | not started |
+|             |      |      |     | S1c_fine | -         | -          | -           | -       | -           |
++-------------+------+------+-----+----------+-----------+------------+-------------+---------+-------------+
+Total: 12 | Done: 9 | Waiting: 0 | Actionable: 3
+
+FAILED / NEEDS ATTENTION:
+  [band] qHPC36-D6h             S4_HSE     OUTCAR incomplete
+  [band] qHPC60                 S4_HSE     OUTCAR incomplete
+  [band] qTPC24-Mg1             S1c_fine   c 未收敛 [unknown] 还没有完成的离子步
+
+== elastic（弹性常数计算，5 个材料）==
++----------+---------+------+-----+--------+----------------------+-------------+
+| Material | tt      | hpc  | dim | S1_opt | S2_elastic           | S3_post     |
++==========+=========+======+=====+========+======================+=============+
+| qHPC20   | elastic | jzzn | 2D  | done   | running              | not started |
+|          |         |      |     | -      | cu49 3587486 4:27    | -           |
+| qHPC24   | elastic | jzzn | 2D  | done   | pd                   | not started |
+|          |         |      |     | -      | 3587488 ((Priority)) | -           |
+| qTPC20-b | elastic | jzzn | 2D  | done   | pd                   | not started |
+|          |         |      |     | -      | 3587491 ((Priority)) | -           |
+| qTPC20-r | elastic | jzzn | 2D  | done   | pd                   | not started |
+|          |         |      |     | -      | 3587492 ((Priority)) | -           |
+| qTPC24   | elastic | jzzn | 2D  | done   | pd                   | not started |
+|          |         |      |     | -      | 3587494 ((Priority)) | -           |
++----------+---------+------+-----+--------+----------------------+-------------+
+Total: 5 | Done: 0 | Waiting: 5 | Actionable: 0
+
+[19:15:42] 无变化
+[19:21:10] 无变化
+[19:26:37] 无变化
+[19:32:00] 无变化
+[19:37:23] 无变化
+[19:42:47] 无变化
+[19:48:10] 无变化
+[19:53:32] 无变化
+[19:58:55] 无变化
+[20:04:17] 无变化
+[20:09:38] 配置变更但重载失败（错误：类型 band 在全局 tf.yaml 里没有对应定义（继承不到 steps）。
+来源文件：/home/wangchao/Fullerene_Network/Mg2C60/project_setting/tf_Mg2C60.yaml
+通常是该文件的类型名和全局 tf.yaml 不一致（如 bd 改名 band 后没同步）。
+全局可用的类型名：（无）。修正命令：
+  sed -i 's/^  band:/  band:/' /home/wangchao/Fullerene_Network/Mg2C60/project_setting/tf_Mg2C60.yaml），沿用旧配置继续监控。
+[20:09:40] 无变化
+[20:15:02] 无变化
+[20:20:20] 无变化
+[20:25:41] 无变化
+[20:31:03] 无变化
+[20:36:22] 无变化
+[20:41:42] 无变化
+[20:47:02] 无变化
+[20:52:26] 无变化
+[20:57:52] 无变化
+[21:03:16] 无变化
+[21:08:40] 无变化
+[21:14:08] 无变化
+[21:19:32] 无变化
+[21:24:57] 无变化
+[21:30:23] 无变化
+[21:35:48] 无变化
+[21:41:11] 无变化
+[21:46:33] 无变化
+[21:51:56] 无变化
+[21:57:21] 无变化
+[22:02:44] 无变化
+[22:08:10] 无变化
+[22:13:36] 无变化
+[22:19:01] 无变化
+[22:24:33] 无变化
+[22:29:56] 无变化
+[22:35:26] 无变化
+[22:40:54] 无变化

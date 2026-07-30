@@ -1509,8 +1509,7 @@ def _dedup_segments(mats):
 
 # 这些步骤键由 tf 本地消费，不下发给远端采集器；其余键一律透传
 _LOCAL_ONLY_STEP_KEYS = {"gen", "gen_need", "aux_files", "run", "group", "seq",
-                         "contcar_to_poscar", "fetch_all", "fetch_files", "after",
-                         "src"}   # v1.5 src
+                         "contcar_to_poscar", "fetch_all", "fetch_files", "after"}
 
 
 def collect_v3_batch(cfg, segs):
@@ -2111,35 +2110,15 @@ def _skill_asset_dirs(t, m, base, sname=None):
                  or "shared").strip().lower()
     troot = os.path.join(base, tdir)
     out = []
-    # v1.5 src：步骤在清单里声明的源子路径（相对技能根），大步骤套小步骤时用。
-    # steps_cfg 经 _seg 下发到采集器，本地则从 t["steps"] 取。
-    steps_cfg = list(seg.get("steps_cfg") or t.get("steps_cfg")
-                     or t.get("steps") or [])
-    for _grp in (t.get("optional_steps") or {}).values():   # 可选组里的步骤也带 src
-        steps_cfg += (_grp or {}).get("steps") or []
-    src_map = {}
-    for _s in steps_cfg:
-        if _s.get("src"):
-            src_map[_s.get("name")] = str(_s["src"]).strip("/")
     if layout == "per_step":
         if sname:
-            if sname in src_map:
-                out.append(os.path.join(base, src_map[sname]))
             out.append(os.path.join(troot, str(sname)))
         else:
-            for _v in src_map.values():          # 不指定步骤：所有 src 都算命中
-                out.append(os.path.join(base, _v))
             out.extend(sorted(d for d in glob.glob(os.path.join(troot, "*"))
                               if os.path.isdir(d)))
     out.append(troot)
     out.append(base)
-    seen, uniq = set(), []
-    for d in out:
-        rd = os.path.normpath(d)
-        if rd not in seen:
-            seen.add(rd)
-            uniq.append(d)
-    return uniq
+    return out
 
 
 def find_asset(cfg, t, m, fname, sname=None):
