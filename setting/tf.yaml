@@ -1,0 +1,177 @@
+# =============================================================================
+# tf.yaml —— taskflow 全局配置（v1.1，双技能版：band 能带 + elastic 弹性常数）
+# 位置（任选其一，tf 自动搜索）：
+#   ① ~/software/taskflow/tf.yaml          （推荐，软件根目录）
+#   ② ~/software/taskflow/setting/tf.yaml  （和 jzzn.yaml 等集群模板放一起）
+# 注意：当前目录下的 ./tf.yaml 优先级最高，项目目录里不要放同名文件。
+# =============================================================================
+
+# ssh 别名（~/.ssh/config 里的 Host；本机跑就写 "" 或删掉这行）
+host: jzzn
+
+# 项目根列表：tf 扫描其下 project_setting/tf_*.yaml（最深三层：
+# 体系级 项目根/C20/project_setting/、材料级 项目根/C20/qHPC20/project_setting/）
+project_roots:
+  - /home/wangchao/Fullerene_Network
+
+# 全自动流水线开关（默认关）。开 = 每次 tf / tf watch 自动提交可开始的步骤。
+# 单个项目想单独关闭，在它的 project_setting/setting.yaml 写 auto_advance: false
+auto_advance: true
+
+# 后台自动监控（零输入全自动，v1.10）：
+# auto_watch: true —— 敲任何 tf 命令都会顺带确保后台监控在跑（没在跑就拉起）。
+# 再执行一次 tf watch --install 写入 crontab 保活：重启/WSL 关闭后自动恢复，
+# 从此完全不用手动 tf watch -d。监控日志/pid 固定在 tf.yaml 所在目录。
+# 想彻底关掉后台监控：auto_watch: false + tf watch --stop + tf watch --uninstall
+auto_watch: true
+# watch_interval: 300   # 监控刷新间隔秒数（默认 300）
+
+# =============================================================================
+# 任务类型骨架：各项目配置（tf_<项目名>.yaml）缺省的字段从这里继承
+# =============================================================================
+task_types:
+  band:                            # 类型名（原 bd 已改名 band；项目里 tf_*.yaml
+    desc: 能带计算                  #  的 bd: 也要同步改成 band:，批量命令见使用说明）
+
+    # ---- 集群配置：两种方式二选一 ------------------------------------------
+    hpc: jzzn                      # 方式一：引用 setting/jzzn.yaml（默认）
+    # 方式二：内联字典——把 setting/jzzn.yaml 的内容直接写在这里，
+    #         写完后 jzzn.yaml 可以删除。字段照原样缩进即可：
+    # hpc:
+    #   name: jzzn
+    #   ssh_host: jzzn
+    #   template_map:
+    #     submit_std_2d.tpl: submit_jzzn_vaspstd_2d.tpl
+    #     ...（其余照 jzzn.yaml 原文）
+
+    skill_dir: skill/band          # gen/check 脚本与模板目录（v1.5：bd 已改名 band，不再用缩写）
+
+    # 超算上的工作根目录（材料目录在其下按名字创建）——改成你的实际路径
+    work_dir: /public/home/wangchao/Fullerene_Network/work
+
+    # skill_subdir（v1.1）：true = 材料目录下按技能建子目录
+    #   远端  work/qHPC20/band/step1a_PBE_opt/…   本地  qHPC20/band/result/…
+    # band 现有材料都是平铺结构（work/qHPC20/step1a_…），全局开此开关会被
+    # 当成新材料重算，所以这里不开。迁移用内置命令（逐材料改项目配置，
+    # 在跑的自动跳过，全完成的批量迁）：
+    #   tf -tt band migrate-subdir --dry-run   先看计划
+    #   tf -tt band migrate-subdir -y          执行迁移，状态仍是 done
+    # 手工把 POSCAR/配置/结果都搬进了 band/ 的，用接管命令（v1.5）：
+    #   tf -tt band adopt --dry-run            先看计划
+    #   tf -tt band adopt -y                   POSCAR/配置回根 + 远端迁入 band/
+    # dir_name 缺省 = 类型 key；想叫别的名字就写 dir_name: 名字
+
+    # gen 时推到材料目录的依赖（skill_dir 里的文件；已存在不覆盖）。
+    # submit 模板写逻辑名（submit_std/ncl_2d/3d.tpl），实际文件经 hpc 的
+    # template_map 映射查找（如 submit_std_3d.tpl → submit_jzzn_vaspstd_3d.tpl）。
+    # v1.4 起这 4 个逻辑名即使漏写也会由 template_map 自动补推，写上是显式声明。
+    gen_need: [dim_common.py, incar_2d.tpl, incar_3d.tpl, submit_std_2d.tpl, submit_std_3d.tpl, submit_ncl_2d.tpl, submit_ncl_3d.tpl]
+    # check 诊断脚本（agent 用，只补不覆盖）
+    aux_files: [check_common.py, step1_check_and_resubmit.py, step2_check_and_resubmit.py, step3_check_and_resubmit.py, step4_check_and_resubmit.py]
+
+    # ---- 自定义步骤子集 run_steps（默认全部）--------------------------------
+    # 不写 = 完整流水线（S1a→S1b→S1c→S2→S3→S3.1_plot→S4→S4.1_plot）。
+    # 写了就只跑列出的步骤，元素可以是：
+    #   序号 1/2/3/4     → 对应计算步骤。三段式弛豫时 1 = step1a/b/c 三段全含；
+    #                    只跑某一段就写步骤名或 label（如 step1a_PBE_opt / S1a_ion）
+    #   3.1 / 4.1        → 对应两个画图步骤
+    #   步骤名或 label    → 如 step2_PBE_static / S2_static
+    # 示例：
+    #   run_steps: [1]              # 只跑三段弛豫（a/b/c 全段）
+    #   run_steps: [1, 2]           # 弛豫 + 静态
+    #   run_steps: [1, 2, 3, 3.1]   # 弛豫、静态、WAVECAR 和 PBE 能带画图
+    #   run_steps: [S1a_ion]        # 只跑弛豫 a 段
+    # 项目 tf_<项目名>.yaml 里写同样的键可单独覆盖。
+    # run_steps: [1, 2, 3, 4, 3.1, 4.1]
+
+    # ---- 能带画图步骤开关（默认开）------------------------------------------
+    # 开（不写或 true）：step3/step4 算完后自动追加 S3.1_plot / S4.1_plot 两步——
+    #   在材料目录直接运行 gen_step3.1/4.1_plot_band.py（不提交 SLURM），生成
+    #   step3_band_plot/、step4_band_plot/（band.png、band.dat、band_summary.json），
+    #   状态显示 completed / not started / error，产物自动整目录拉回 result/。
+    # 关：写 false，这两步不出现。也可在项目 tf_<项目名>.yaml 里单独覆盖。
+    # plot_steps: false
+
+    # 计算步骤（顺序即流水线顺序；配了 run_steps 时这里是全集）
+    # ---- 三段式弛豫（配合 gen_step1_PBE_opt.py 的 RELAX_STAGES="auto"）
+    #   a 固定胞弛豫原子  ISIF=2 IBRION=2 EDIFFG=-0.02  NSW=200（2D 无 IOPTCELL）
+    #   b 放开晶胞 CG     ISIF=3 IBRION=2 EDIFFG=-0.01  NSW=200
+    #   c 准牛顿收尾      ISIF=3 IBRION=1 EDIFFG=-0.001 NSW=100
+    # 结构接力由 gen 脚本完成：a ← 材料 POSCAR，b ← step1a/CONTCAR，
+    # c ← step1b/CONTCAR；前一段 CONTCAR 不在会直接报错，不会拿旧结构瞎跑。
+    # gen 字段可带参数：脚本名后的部分原样传给脚本。
+    # step2 的 STEP1_DIR="auto" 按 c → b → a → 旧单目录顺序自动找结构。
+    # contcar_to_poscar: retry 续跑时先把 CONTCAR 盖回 POSCAR（NSW 用尽显救）。
+    #
+    # check: relax_skip（v1.8）——收敛感知的变段数判据：
+    #   a 收敛 → b/c 自动跳过；b 收敛 → c 跳过；c 是收敛总闸（跑了没收敛
+    #   显示 error 并附空转诊断）。a/b "跑过"即算 done（不收敛是常态，自然
+    #   流转下一段）。旧单段 step1_PBE_opt 已收敛的材料三段全跳过（免迁移）。
+    # group: S1_relax —— 三段在状态表合并成一列总览；-j 仍按原名/label 指段。
+    steps:
+      - {name: step1a_PBE_opt,   label: S1a_ion,   stage: a, check: relax_skip, group: S1_relax, gen: "gen_step1_PBE_opt.py --stage a", contcar_to_poscar: true}
+      - {name: step1b_PBE_opt,   label: S1b_cell,  stage: b, check: relax_skip, group: S1_relax, gen: "gen_step1_PBE_opt.py --stage b", contcar_to_poscar: true}
+      - {name: step1c_PBE_opt,   label: S1c_fine,  stage: c, check: relax_skip, group: S1_relax, gen: "gen_step1_PBE_opt.py --stage c", contcar_to_poscar: true}
+      - {name: step2_PBE_static, label: S2_static, check: outcar,  gen: gen_step2_static.py}
+      - {name: step3_PBE_WAVECAR, label: S3_WAVECAR, check: wavecar, gen: gen_step3_WAVECAR.py}
+      - {name: step4_HSE_band,   label: S4_HSE,    check: outcar,  gen: gen_step4_HSE.py}
+    # 想回到单段弛豫（gen_step1 里 RELAX_STAGES="single"）：把上面三条
+    # step1a/b/c 换成下面这一条（序号 1 两种写法都兼容）——
+    #   - {name: step1_PBE_opt, label: S1_opt, check: outcar_relax, gen: gen_step1_PBE_opt.py, contcar_to_poscar: true}
+
+    # ---- 弛豫空转诊断 relax_diag（步骤级，可选覆盖）-------------------------
+    # 弛豫步未收敛时 tf 不再只报 force not converged，而是读 OSZICAR 给出
+    # 判定和对策：progressing（正常下降）/ oscillating（末段振荡，小幅→换
+    # IBRION=1 收尾，大幅→先跑阶段 a 固定胞）/ thrown（单步能量暴涨，线搜索
+    # 甩飞→先跑阶段 a 或 POTIM=0.1）/ electronic（电子步撞 NELM，力不可信）
+    # / stalled（停滞→IBRION=1）/ nsw（步数用完→cp CONTCAR POSCAR 续跑）。
+    # 判据默认值（脚本内 RELAX_DIAG_DEFAULTS）：
+    #   window: 8（看末几步） osc_tol: 5e-3 stall_tol: 1e-4 jump_tol: 0.5 min_steps: 6
+    # 某个步骤想改判据，在该步骤里加一行（举例）：
+    #   - {name: step1c_PBE_opt, ..., relax_diag: {window: 10, osc_tol: 0.003}}
+
+  # ===========================================================================
+  # 技能二：elastic —— 弹性常数三步流水线（skill/elastic）
+  #   S1_opt      标准结构优化（2D 自动两段、偶极修正、磁性/U 判定）
+  #   S2_elastic  IBRION=6 有限形变（应力-应变 → Cij）
+  #   S3_post     本地后处理（不提交 SLURM）：Cij 解析、Born 判据、2D→N/m 换算、
+  #               各向异性图 → step3_postprocess/mechanical_properties.json 等
+  # 用法：项目根的 project_setting/tf_<项目名>.yaml 里写  elastic:  即可。
+  # 注意：S3_post 在超算登录节点跑，需要 numpy / matplotlib / pymatgen
+  #       （pip install --user pymatgen）；Born 判据不稳定时按"科学结果"处理：
+  #       文件照常生成，状态显示 error 提醒人工查看。
+  # ===========================================================================
+  elastic:
+    desc: 弹性常数计算
+
+    hpc: jzzn                      # 同 band：引用 setting/jzzn.yaml（或内联字典）
+
+    skill_dir: skill/elastic
+
+    # 超算上的工作根目录——和 band 用同一个根：技能子目录"跟着项目走"，
+    # 超算上每个材料目录下按技能分文件夹（band 迁移后同构）：
+    #   work/C60/qHPC60/
+    #   ├── band/step1a_PBE_opt/…      （band 迁移后）
+    #   ├── elastic/step1_std_opt/…    （本类型，已开启）
+    #   ├── ke/…  kl/…                 （未来技能，同法加类型即可）
+    work_dir: /public/home/wangchao/Fullerene_Network/work
+
+    # 弹性是新技能、没有历史目录，直接开启技能子目录（v1.1）：
+    #   远端  work/qHPC60/elastic/step1_std_opt/…   本地  qHPC60/elastic/result/…
+    skill_subdir: true
+    # dir_name: elastic    # 子目录名缺省 = 类型 key，一般不用写
+
+    # 注意：elastic 全程用 vasp_std，不用 ncl 模板。每个步骤都显式声明了
+    # 步骤级 gen_need——它会【完全替代】类型级清单并跳过 template_map 自动
+    # 补推（v1.4+），所以 submit_ncl_*.tpl 不会进推送清单，skill/elastic 里
+    # 无需放 ncl 占位模板。band 类型未声明步骤级 gen_need，行为不变。
+
+    # 弹性没有 band 的画图步骤，plot_steps 注入对带 step3_PBE/step4_HSE 前缀的
+    # 类型才生效（v1.1 起），这里不用也不能开 plot_steps。
+    # run_steps 用法同 band：序号 1=S1_opt 2=S2_elastic 3=S3_post，或步骤名/label
+    steps:
+      - {name: step1_std_opt,     label: S1_opt,     check: outcar_relax, gen: gen_step1_std_opt.py, contcar_to_poscar: true,
+         gen_need: [dim_common.py, check_common.py, step1_check_and_resubmit.py, incar_2d.tpl, incar_3d.tpl, submit_std_2d.tpl, submit_std_3d.tpl]}
+      - {name: step2_elastic,     label: S2_elastic, check: marker, marker: "OUTCAR:TOTAL ELASTIC MODULI", gen: gen_step2_elastic.py,
+         gen_need: [dim_common.py, check_common.py, step2_check_and_resubmit.py, submit_std_2d.tpl, submit_std_3d.tpl]}
+      - {name: step3_postprocess, label: S3_post,    check: plot, run: gen, gen: gen_step3_postprocess.py, gen_need: [], done_marker: mechanical_properties.json, fetch_all: true}

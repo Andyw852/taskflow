@@ -1,0 +1,4203 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+taskflow (tf) — VASP 多材料·多步骤·多任务类型流水线管理框架（SLURM）
+
+任务类型（-tt）：能带 band / 弹性常数 elastic / 任何自定义类型，
+每个类型在配置文件里定义自己的 root、步骤流水线、完成判据和生成脚本。
+
+用法：
+  tf [ROOT]                        状态总表（全部任务类型，带 tt 列）
+  tf -tt band                      只看能带类
+  tf -tt band -p MAT status        单材料详情
+  tf [-tt TT] [-p MAT] start       开始：输入没生成先 gen 再提交
+  tf [-tt TT] [-p MAT] stop        取消作业
+  tf [-tt TT] [-p MAT] retry       用现有输入文件重交（手改文件后用它）
+  tf [-tt TT] [-p MAT] rerun       删除旧的生成文件 → gen 重新生成 → 提交
+  tf json                          JSON 输出
+  tf config                        打印示例配置
+
+  -p 指认 project（材料），-j 指认 job（步骤名/label/序号，必须配 -p）。
+  -tt 可不指定：-p 在所有类型里解析，唯一就直接用，跨类型重名会提示补 -tt。
+  同一任务类型下项目名不允许重复（启动即报错）；不同类型下允许同名。
+
+无状态：作业对应关系靠 squeue 工作目录（%Z），scancel 后自动回落为文件判据。
+
+scancel 标记（v1.4）：tf stop 取消的步骤会在本地材料目录打标记
+（.tf_scancel.json），状态列显示 scancel，auto_advance / 批量 start 都不会
+再动它——防止"手动取消后被自动重提"。显式重跑：-p MAT start（保留文件
+直接重交）/ retry / rerun，或跨材料 -status scancel start（retry/rerun）。
+提交成功、rerun、clean 时标记自动清除；步骤出现新作业或已完成时标记自愈。
+"""
+
+import argparse
+import base64
+import glob
+import hashlib
+import json
+import os
+import re
+import shlex
+import shutil
+import subprocess
+import sys
+import time
+
+# ---------------------------------------------------------------------------
+# 远端采集器（在超算上跑，只用标准库；一次调用采集所有任务类型）
+# ---------------------------------------------------------------------------
+COLLECTOR = r'''
+import base64, getpass, glob, json, os, re, subprocess, sys
+
+def natkey(s):
+    return [int(t) if t.isdigit() else t for t in re.split(r"(\d+)", s)]
+
+def tail_text(path, nbytes=1000000):   # v3.18：默认 1MB，收敛/结束标志都在末尾
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, 2)
+            size = f.tell()
+            f.seek(max(0, size - nbytes))
+            return f.read().decode("utf-8", "ignore")
+    except OSError:
+        return ""
+
+# ---------- 步骤完成判据 ----------
+# ---------- 弛豫诊断：判断是不是在空转 ----------
+# 判据全部只读 OSZICAR（每步几十字节，很便宜），必要时才读 INCAR 拿 NSW/NELM。
+# 目的：把"还在往下走"和"已经在原地打转"区分开，后者应当停掉换 IBRION=1 或
+# 回退到固定胞阶段，而不是继续烧机时。
+RELAX_DIAG_DEFAULTS = {
+    "window":      8,        # 看最后多少个离子步
+    "osc_tol":     5e-3,     # eV，|dE| 小于它且符号乱翻 = 小幅振荡
+    "stall_tol":   1e-4,     # eV，|dE| 小于它但力没收敛 = 停滞
+    "jump_tol":    0.5,      # eV，单步能量上涨超过它 = 线搜索把结构甩飞了
+    "min_steps":   6,        # 少于这么多步不下结论
+}
+
+def _incar_vals(d):
+    v = {}
+    try:
+        with open(os.path.join(d, "INCAR"), encoding="utf-8", errors="ignore") as f:
+            for ln in f:
+                ln = ln.split("#")[0].split("!")[0]
+                for part in ln.split(";"):
+                    if "=" in part:
+                        k, x = part.split("=", 1)
+                        v[k.strip().upper()] = x.strip()
+    except OSError:
+        pass
+    return v
+
+def read_oszicar_ionic(d):
+    """返回 [(离子步号, F, dE, 该步电子迭代次数), ...]。"""
+    p = os.path.join(d, "OSZICAR")
+    if not os.path.isfile(p):
+        return []
+    out, nelec = [], 0
+    for ln in tail_text(p, 4000000).splitlines():
+        m = re.match(r"\s*(DAV|RMM|CG|EDDAV|DIIS|BLK)\s*:\s*(\d+)", ln)
+        if m:
+            nelec = int(m.group(2))
+            continue
+        m = re.match(r"\s*(\d+)\s+F=\s*(\S+)\s+E0=\s*(\S+)\s+d\s*E\s*=\s*(\S+)", ln)
+        if m:
+            try:
+                out.append((int(m.group(1)), float(m.group(2)),
+                            float(m.group(4)), nelec))
+            except ValueError:
+                pass
+            nelec = 0
+    return out
+
+def relax_diagnose(d, cfg=None):
+    """返回 (verdict, text)。verdict ∈ progressing/oscillating/stalled/
+       thrown/electronic/nsw/unknown。text 是给人看的一句话。"""
+    c = dict(RELAX_DIAG_DEFAULTS)
+    c.update((cfg or {}).get("relax_diag", {}) if isinstance(cfg, dict) else {})
+    steps = read_oszicar_ionic(d)
+    n = len(steps)
+    if n == 0:
+        return "unknown", "还没有完成的离子步"
+
+    iv = _incar_vals(d)
+    def _i(k, dflt):
+        try:
+            return int(float(iv.get(k, dflt)))
+        except (TypeError, ValueError):
+            return dflt
+    nsw, nelm = _i("NSW", 0), _i("NELM", 60)
+    ibrion, isif = iv.get("IBRION", "?"), iv.get("ISIF", "?")
+
+    bits = ["%d 步" % n]
+
+    # --- 1. 电子步撞 NELM：力是错的，别的判断都不用看了 ---
+    bad = [s for s in steps if s[3] >= nelm]
+    if bad:
+        return "electronic", ("%s；%d 步电子循环撞了 NELM=%d，这些步的力不可信 "
+                              "-> 先调大 NELM 或放宽 EDIFF，别继续弛豫"
+                              % ("/".join(bits), len(bad), nelm))
+
+    W = min(n, int(c["window"]))
+    win = steps[-W:]
+    dEs = [x[2] for x in win]
+
+    # --- 2. 单步能量暴涨：CG 线搜索把结构甩出去了 ---
+    up = max(dEs)
+    if up > c["jump_tol"]:
+        return "thrown", ("%s；最近有一步能量上涨 %.3f eV —— CG 的线搜索把结构甩飞了。"
+                          "对策：先跑阶段 a（ISIF=2 固定胞）把原子弛豫干净，"
+                          "或把 POTIM 调到 0.1" % ("/".join(bits), up))
+
+    if n < int(c["min_steps"]):
+        return "progressing", "%s；步数还少，继续观察" % "/".join(bits)
+
+    flips = sum(1 for i in range(1, len(dEs)) if dEs[i] * dEs[i - 1] < 0)
+    amax = max(abs(x) for x in dEs)
+    net = sum(dEs)
+    bits.append("末 %d 步 dE 翻转 %d 次，|dE|max=%.2g eV，净变化 %+.2g eV"
+                % (W, flips, amax, net))
+
+    hit_nsw = (nsw and n >= nsw)
+    if hit_nsw:
+        bits.append("已撞 NSW=%d" % nsw)
+
+    # --- 3. 振荡 ---
+    if flips >= max(2, (W - 1) // 2):
+        if amax < c["osc_tol"]:
+            adv = ("小幅振荡，已经在极小值附近了 -> 换 IBRION=1（准牛顿）收尾，"
+                   "通常 10 步内落底" if str(ibrion).strip() != "1"
+                   else "IBRION=1 仍在小幅振荡 -> 检查 EDIFFG 是不是设得太严，"
+                        "或 EDIFF 不够紧导致力有噪声")
+        else:
+            adv = ("大幅振荡（|dE| 到 %.2g eV）-> 两组自由度在打架。"
+                   "先跑阶段 a 固定胞弛豫原子，再放开晶胞" % amax)
+        return "oscillating", "%s；%s" % ("；".join(bits), adv)
+
+    # --- 4. 停滞 ---
+    if amax < c["stall_tol"]:
+        return "stalled", ("%s；能量基本不动但力还没到判据 -> 换 IBRION=1 收尾；"
+                           "若已是 IBRION=1，多半是 EDIFFG 过严或 EDIFF/NELM 不足"
+                           % "；".join(bits))
+
+    if hit_nsw:
+        return "nsw", ("%s；还在往下走但步数用完了 -> cp CONTCAR POSCAR 续跑，"
+                       "或直接进入 IBRION=1 阶段" % "；".join(bits))
+
+    return "progressing", "%s；仍在正常下降" % "；".join(bits)
+
+
+def ck_outcar_relax(d, cfg):
+    p = os.path.join(d, "OUTCAR")
+    if not os.path.isfile(p):
+        return False, "OUTCAR missing"
+    text = tail_text(p)
+    phrase = cfg.get("phrase", "reached required accuracy")
+    if phrase not in text:
+        _v, _t = relax_diagnose(d, cfg)
+        return False, "未收敛 [%s] %s" % (_v, _t)
+    tol = float(cfg.get("pressure_tol", 5.0))
+    m = re.findall(r"external pressure\s*=\s*(-?[\d.]+)\s*kB", text)
+    if not m:
+        return False, "pressure not found"
+    pr = float(m[-1])
+    if abs(pr) > tol:
+        # 力过了但应力没过：ISIF=3 的常态（EDIFFG 负值只判力、不判应力）。
+        # 2D 固定 c 轴时真空方向永远有残余应力，这里的判据应当放宽或改看面内分量。
+        return False, ("力已收敛但压强 %.1f kB > %g kB -> cp CONTCAR POSCAR 再跑一轮"
+                       "（Pulay 应力，通常 2~3 轮收敛）；2D 冻结 c 轴时残余压强属正常，"
+                       "可调大本步骤的 pressure_tol" % (pr, tol))
+    return True, "converged (p=%.1fkB)" % pr
+
+def ck_outcar(d, cfg):
+    p = os.path.join(d, "OUTCAR")
+    if not os.path.isfile(p):
+        return False, "OUTCAR missing"
+    if "General timing and accounting informations" not in tail_text(p, 400000):
+        return False, "OUTCAR incomplete"
+    return True, "finished"
+
+def ck_wavecar(d, cfg):
+    p = os.path.join(d, "WAVECAR")
+    if not os.path.isfile(p):
+        return False, "WAVECAR missing"
+    sz = os.path.getsize(p)
+    mn = int(cfg.get("wavecar_min", 1024 * 1024))
+    if sz < mn:
+        return False, "WAVECAR too small (%dB)" % sz
+    return True, "WAVECAR OK (%.1fMB)" % (sz / 1e6)
+
+def ck_eigenval(d, cfg):
+    if not os.path.isfile(os.path.join(d, "EIGENVAL")):
+        return False, "EIGENVAL missing"
+    if os.path.isfile(os.path.join(d, "KPOINTS_OPT")) and \
+       not os.path.isfile(os.path.join(d, "vasprun.xml")):
+        return False, "vasprun.xml missing"
+    return True, "band output OK"
+
+def ck_marker(d, cfg):
+    spec = cfg.get("marker", "OUTCAR:General timing and accounting informations")
+    fn, text = spec.split(":", 1)
+    p = os.path.join(d, fn)
+    if not os.path.isfile(p):
+        return False, fn + " missing"
+    if text not in tail_text(p):
+        return False, fn + " incomplete"
+    return True, "finished"
+
+def ck_plot(d, sc):
+    """画图步骤：done_marker（默认 band_summary.json）或任一 .png 存在即完成。"""
+    marker = sc.get("done_marker") or "band_summary.json"
+    if os.path.isfile(os.path.join(d, marker)):
+        return True, marker
+    pngs = glob.glob(os.path.join(d, "*.png"))
+    if pngs:
+        return True, os.path.basename(pngs[0])
+    return False, "no plot output"
+
+
+def _relax_conv(d):
+    """该弛豫目录已收敛：OUTCAR 存在且含 reached required accuracy。
+    不查压强——2D 冻结 c 轴时真空方向残余压属正常（压强判断留给人工）。"""
+    p = os.path.join(d, "OUTCAR")
+    return os.path.isfile(p) and "reached required accuracy" in tail_text(p)
+
+
+def ck_relax_skip(d, sc):
+    """三段式弛豫的收敛感知判据（步骤里写 stage: a/b/c + check: relax_skip）。
+    变段数：a 收敛 → b/c 跳过；b 收敛 → c 跳过；c 是收敛总闸，
+    跑了没收敛 → FAIL 并附空转诊断（relax_diagnose）。
+    a/b "跑过"（有 OUTCAR）即 done——前两段不收敛是常态，自然流转下一段。
+    旧单段 step1_PBE_opt 已收敛 → 三段全部 done（老材料免迁移直接跳过）。
+    步骤目录约定：<材料目录>/step1{a,b,c}_PBE_opt。"""
+    mat = os.path.dirname(d)
+    def P(s):
+        return os.path.join(mat, "step1%s_PBE_opt" % s)
+    def ran(s):
+        return os.path.isfile(os.path.join(P(s), "OUTCAR"))
+    if _relax_conv(os.path.join(mat, "step1_PBE_opt")):
+        return True, "旧单段已收敛，跳过"
+    st = str(sc.get("stage") or "")
+
+    def gate(s):
+        """v1.9：段 s 跑完未收敛时的放行闸门（防空转）。
+        病态轨迹——甩飞(thrown)/电子步撞 NELM(electronic)/大幅振荡——
+        拦截在本段（FAIL 等人工）：带病结构进下一段只会接着震荡烧机时。
+        小幅振荡/停滞/NSW 用尽但仍在下降 → 放行，下一段换算法自然收尾。
+        返回 None=放行，否则=拦截理由。"""
+        v, t = relax_diagnose(P(s), sc)
+        if v in ("thrown", "electronic"):
+            return t
+        if v == "oscillating":
+            cc = dict(RELAX_DIAG_DEFAULTS)
+            if isinstance(sc, dict) and sc.get("relax_diag"):
+                cc.update(sc["relax_diag"])
+            steps = read_oszicar_ionic(P(s))
+            W = min(len(steps), int(cc["window"]))
+            if W >= 2 and max(abs(x[2]) for x in steps[-W:]) >= float(cc["osc_tol"]):
+                return t   # 大幅振荡（|dE| 超 osc_tol）
+        return None
+
+    if st == "a":
+        if _relax_conv(P("a")):
+            return True, "converged"
+        if ran("a"):
+            bad = gate("a")
+            if bad:
+                return False, ("a 轨迹异常，不放行 b：%s → 按对策处理后 "
+                               "tf retry 本段" % bad)
+            return True, "ran（未收敛，流转 b）"
+        if ran("b") or ran("c"):
+            return True, "后续段已跑"
+        return False, "OUTCAR missing"
+    if st == "b":
+        if _relax_conv(P("a")):
+            return True, "a 已收敛，跳过"
+        if ran("b"):
+            if _relax_conv(P("b")):
+                return True, "converged"
+            bad = gate("b")
+            if bad:
+                return False, ("b 轨迹异常，不放行 c：%s → 按对策处理后 "
+                               "retry 本段（或回 a 段 rerun）" % bad)
+            return True, "ran（未收敛，流转 c）"
+        if ran("c"):
+            return True, "c 已跑"
+        return False, "OUTCAR missing"
+    # c：收敛总闸——前面任何一段收敛则跳过；自己收敛才 done
+    if _relax_conv(P("a")) or _relax_conv(P("b")):
+        return True, "前段已收敛，跳过"
+    if _relax_conv(P("c")):
+        return True, "converged"
+    if ran("c"):
+        _v, _t = relax_diagnose(P("c"), sc)
+        return False, "c 未收敛 [%s] %s" % (_v, _t)
+    return False, "OUTCAR missing"
+
+
+CHECKERS = {"outcar_relax": ck_outcar_relax, "outcar": ck_outcar,
+            "wavecar": ck_wavecar, "eigenval": ck_eigenval, "marker": ck_marker,
+            "plot": ck_plot, "relax_skip": ck_relax_skip}
+
+def collect_type(t, jobs_by_dir):
+    root = os.path.realpath(os.path.expanduser(t["root"]))
+    cfg_steps = t.get("steps") or []
+    step_names = [s["name"] for s in cfg_steps]
+
+    def has_incar_sub(d):
+        try:
+            return any(os.path.isfile(os.path.join(d, x, "INCAR"))
+                       for x in os.listdir(d) if os.path.isdir(os.path.join(d, x)))
+        except OSError:
+            return False
+
+    materials = []
+    if t.get("materials"):
+        for name in t["materials"]:
+            materials.append({"name": name, "path": os.path.join(root, name)})
+    else:
+        cands = [root]
+        for pat in ("/*", "/*/*"):
+            cands += [p for p in glob.glob(root + pat) if os.path.isdir(p)]
+        picked, picked_set = [], set()
+        for c in cands:
+            if has_incar_sub(c) and c not in picked_set:
+                picked.append(c); picked_set.add(c)
+        for c in cands:
+            if c in picked_set or not os.path.isfile(os.path.join(c, "POSCAR")):
+                continue
+            anc, inside = os.path.dirname(c), False
+            while anc.startswith(root) and anc != root:
+                if anc in picked_set:
+                    inside = True
+                    break
+                anc = os.path.dirname(anc)
+            if not inside:
+                picked.append(c); picked_set.add(c)
+        for c in picked:
+            name = os.path.relpath(c, root)
+            materials.append({"name": name if name != "." else os.path.basename(c),
+                              "path": c})
+        materials.sort(key=lambda m: natkey(m["name"]))
+
+    scfg = {s["name"]: s for s in cfg_steps}
+
+    def probe(m):
+        """单材料全部步骤的文件状态与完成判据（IO 密集，材料间并行）。"""
+        names = list(step_names)
+        if not names:
+            try:
+                names = sorted([x for x in os.listdir(m["path"])
+                                if os.path.isfile(os.path.join(m["path"], x, "INCAR"))],
+                               key=natkey)
+            except OSError:
+                names = []
+        steps = []
+        for sname in names:
+            d = os.path.normpath(os.path.join(m["path"], sname))
+            sc = scfg.get(sname, {})
+            f = {"name": sname, "label": sc.get("label", sname), "dir": d,
+                 "exists": os.path.isdir(d),
+                 "has_incar": os.path.isfile(os.path.join(d, "INCAR")),
+                 "has_outcar": os.path.isfile(os.path.join(d, "OUTCAR")),
+                 "has_slurm_out": bool(glob.glob(os.path.join(d, "slurm-*.out"))),
+                 "submit": sc.get("submit", "submit.sh")}
+            j = jobs_by_dir.get(d)
+            f["job"] = j
+            if sc.get("check") == "plot":
+                f["plot"] = True          # v3.21：画图步骤不提交作业，状态三态
+                if not f["exists"]:
+                    f["done"], f["diag"] = False, "not started"
+                else:
+                    f["done"], f["diag"] = ck_plot(d, sc)
+                    if not f["done"]:
+                        f["plot_error"] = True   # 目录在但没有产出 = 上次运行失败
+            elif j and j.get("state") in ("R", "PD", "CG", "CF"):
+                f["done"], f["diag"] = False, "job " + j["state"]  # v3.19：作业在跑/排队
+            elif f["exists"] or sc.get("check") == "relax_skip":   # → 不读输出文件
+                # relax_skip 目录不在也要判：它看的是兄弟段目录（a 收敛则
+                # b/c 跳过；旧单段收敛则全跳过），自己的目录多半还没生成
+                ck = CHECKERS.get(sc.get("check", "outcar" if step_names
+                                  else "marker"), ck_outcar)
+                f["done"], f["diag"] = ck(d, sc)
+            else:
+                f["done"], f["diag"] = False, "dir missing"
+            steps.append(f)
+        m["steps"] = steps
+        # v3.3：维度标记（任一步骤目录 workflow_method.txt 里的 DIM=2D/3D）
+        m["dim"] = ""
+        for sname in names:
+            mf = os.path.join(m["path"], sname, "workflow_method.txt")
+            if os.path.isfile(mf):
+                try:
+                    for ln in open(mf, errors="ignore"):
+                        if ln.upper().startswith("DIM="):
+                            v = ln.split("=", 1)[1].strip().upper()
+                            if v in ("2D", "3D"):
+                                m["dim"] = v
+                            break
+                except OSError:
+                    pass
+            if m["dim"]:
+                break
+        return m
+
+    if len(materials) > 1:   # v3.18：材料间并行探测（IO 密集，GIL 无影响）
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=min(8, len(materials))) as ex:
+            materials = list(ex.map(probe, materials))
+    else:
+        materials = [probe(m) for m in materials]
+    return {"key": t["key"], "desc": t.get("desc", t["key"]), "root": root,
+            "materials": materials}
+
+def main():
+    import time as _time
+    _t0 = _time.time()
+    args = sys.argv[1:]
+    opts = dict(zip(args[::2], args[1::2]))
+    cfg = json.loads(base64.b64decode(opts["--config64"]).decode("utf-8"))
+    user = cfg.get("user") or getpass.getuser()
+
+    # ---------- squeue（%Z = 作业工作目录，所有类型共用一份队列数据） ----------
+    jobs, squeue_err = [], None
+    def run_squeue(fmt):
+        return subprocess.run(["squeue", "-u", user, "-h", "-o", fmt],
+                              capture_output=True, text=True, timeout=60)
+    try:
+        r = run_squeue("%i|%j|%T|%M|%D|%R|%Z")
+        if r.returncode != 0:
+            r = run_squeue("%i|%j|%T|%M|%D|%R")
+        if r.returncode != 0:
+            squeue_err = (r.stderr or "").strip()
+        else:
+            STATE_MAP = {"RUNNING": "R", "PENDING": "PD", "COMPLETING": "CG",
+                         "CONFIGURING": "CF", "SUSPENDED": "S", "CANCELLED": "CA"}
+            for ln in r.stdout.splitlines():
+                p = ln.rstrip("\n").split("|")
+                if len(p) < 6:
+                    continue
+                st = STATE_MAP.get(p[2], p[2])   # 兼容长状态名（RUNNING/PENDING）和缩写（R/PD）
+                jobs.append({"id": p[0], "name": p[1], "state": st, "time": p[3],
+                             "nodes": p[4], "info": p[5],
+                             "workdir": os.path.normpath(p[6]) if len(p) > 6 and p[6] else ""})
+    except Exception as e:
+        squeue_err = str(e)
+    jobs_by_dir = {}
+    for j in jobs:
+        if j["workdir"] and j["workdir"] not in jobs_by_dir:
+            jobs_by_dir[j["workdir"]] = j
+
+    _t1 = _time.time()
+    types = [collect_type(t, jobs_by_dir) for t in cfg["types"]]
+    _t2 = _time.time()
+    print(json.dumps({"types": types, "squeue_err": squeue_err,
+                      "timings": {"squeue": _t1 - _t0, "probe": _t2 - _t1}},
+                     ensure_ascii=False))
+
+main()
+'''
+
+
+# ---------------------------------------------------------------------------
+# 配置与任务类型模型
+# ---------------------------------------------------------------------------
+TF_VERSION = "1.0"
+
+# 配置搜索顺序：当前目录 → 程序真实位置的上级目录（版本化布局 ~/taskflow/tf.yaml）
+# → ~/.config/taskflow → 家目录
+CONFIG_SEARCH = [
+    "./tf.yaml", "./tf.yml", "./tf.json",
+    os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "tf.yaml"),
+    os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "..", "tf.yaml"),
+    os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "..",
+                 "setting", "tf.yaml"),  # v1.0：也可放 setting/tf.yaml
+    os.path.expanduser("~/.config/taskflow/tf.yaml"),
+    os.path.expanduser("~/.tf.yaml"),
+]
+
+EXAMPLE_CONFIG = """\
+# ===== taskflow v3 全局配置 =====
+host: jzzn                 # 默认 ssh 别名（可被项目 project_setting/hpc.yaml 的 ssh_host 覆盖）
+# user: wangchao           # squeue 查询用户，缺省 = 远端当前用户
+
+# 项目根列表：tf 扫描每个根下的 project_setting/tf_*.yaml（含一层子目录，
+# 如 C20/project_setting/tf_C20.yaml）。配置跟着项目走，加新项目 = 在项目里
+# 放一份 project_setting/tf_<项目名>.yaml（tf -p X init 可生成），不用改这里。
+project_roots:
+  - /home/wangchao/Fullerene_Network
+
+# 全局 task_types（可选）：作为公共骨架，项目配置里同 key 的类型自动继承缺省字段。
+# 注意：用了项目配置（tf_*.yaml），这里就不要再写 local_root（否则材料会被
+# 全局段和项目段重复发现而报重名）。key 就是 -tt 用的短名。
+task_types:
+  band:
+    desc: 能带计算
+    work_dir: /public/home/wangchao/Fullerene_Network/fullerene_network/test
+                           # 超算工作根：远端目录 = work_dir + 材料相对路径
+    skill_dir: skill/band  # 技能目录（gen 脚本 + 模板；先相对项目配置目录找，
+                           # 找不到再相对本文件所在目录——taskflow/skill 是公共位置）
+    hpc: jzzn              # 默认超算（对应 taskflow/setting/jzzn.yaml；项目可用 hpc.yaml 覆盖）
+    # gen 运行前补齐到材料目录的文件（只补不覆盖）：维度判断库 + 2D/3D 双模板。
+    # gen 脚本按维度自动选 incar_2d/3d.tpl、submit_std_2d/3d.tpl、submit_ncl_2d/3d.tpl
+    #（resolve_tpl 回退无后缀旧名；submit 逻辑名经 hpc.yaml 的 template_map 映射）
+    gen_need: [dim_common.py, incar_2d.tpl, incar_3d.tpl,
+               submit_std_2d.tpl, submit_std_3d.tpl, submit_ncl_2d.tpl, submit_ncl_3d.tpl]
+    # aux_files：辅助脚本（生成时一并推送到材料目录，供 agent 在超算上诊断用）
+    aux_files: [check_common.py, step1_check_and_resubmit.py,
+                step2_check_and_resubmit.py, step3_check_and_resubmit.py,
+                step4_check_and_resubmit.py]
+    steps:
+      # 单段弛豫（gen_step1 的 RELAX_STAGES="single"）：
+      - name: step1_PBE_opt
+        label: S1_opt
+        check: outcar_relax
+        gen: gen_step1_PBE_opt.py
+        contcar_to_poscar: true
+      # 三段式弛豫（gen_step1 的 RELAX_STAGES="auto"）——把上面那条换成这三条：
+      #   a 固定胞弛豫原子 / b 放开晶胞用 CG / c 准牛顿收尾
+      #   gen 字段可以带参数，脚本名后面的部分原样传给它
+      # - {name: step1a_PBE_opt, label: S1a_ion,  check: outcar_relax,
+      #    gen: "gen_step1_PBE_opt.py --stage a", contcar_to_poscar: true}
+      # - {name: step1b_PBE_opt, label: S1b_cell, check: outcar_relax,
+      #    gen: "gen_step1_PBE_opt.py --stage b", contcar_to_poscar: true}
+      # - {name: step1c_PBE_opt, label: S1c_fine, check: outcar_relax,
+      #    gen: "gen_step1_PBE_opt.py --stage c", contcar_to_poscar: true}
+      - {name: step2_PBE_static,  label: S2_static,  check: outcar,   gen: gen_step2_static.py}
+      - {name: step3_PBE_WAVECAR, label: S3_WAVECAR, check: wavecar,  gen: gen_step3_WAVECAR.py}
+      - {name: step4_HSE_band,    label: S4_HSE,     check: eigenval, gen: gen_step4_HSE.py}
+
+# 老模式也支持：类型里写 root（= 超算目录，远端发现材料）而不写 local_root，行为同 v2.x
+"""
+
+# 项目配置模板（init 生成 project_setting/tf_<项目名>.yaml；包内模板放 setting/tf_default.yaml）
+DEFAULT_PROJECT_CONFIG = """\
+# 项目配置：tf_<项目名>.yaml（文件名全局唯一，禁止与其他项目重复）
+# 本文件放在项目文件夹的 project_setting/ 下；local_root 缺省 = project_setting 的父目录。
+# 未写的字段自动继承全局 tf.yaml 里同 key 类型的定义。
+task_types:
+  band:
+    desc: 能带计算
+    work_dir: /public/home/wangchao/Fullerene_Network/fullerene_network/test
+    local_root: ".."       # ".." = 体系根（如 Fullerene_Network）：材料名带 C20/ 前缀，
+                           # 超算目录 = work_dir/C20/qHPC20（与本地树一致，推荐）
+                           # 缺省 "." = 项目目录本身：材料名 qHPC20，超算 = work_dir/qHPC20
+    # skill_dir: skill/band  # 缺省继承全局；项目有专用脚本时写相对本目录的路径
+    # hpc: jzzn
+    # plot_steps: false    # 能带画图步骤开关，默认开（true）。开 = step3/4 算完后
+                           # 自动追加 S3.1_plot/S4.1_plot 两步：在材料目录运行
+                           # gen_step3.1/4.1_plot_band.py（不提交 SLURM），生成
+                           # step3_band_plot/step4_band_plot（band.png/band.dat/
+                           # band_summary.json），状态显示 completed/not started/
+                           # error，产物自动整目录拉回 result/。写 false 关闭这两步
+    # gen_need: [dim_common.py, incar_2d.tpl, incar_3d.tpl, submit_std_2d.tpl, submit_std_3d.tpl, submit_ncl_2d.tpl, submit_ncl_3d.tpl]
+    # steps:               # 缺省继承全局；项目流程不同就写自己的
+    #   - {name: step1_PBE_opt, label: S1_opt, check: outcar_relax, gen: gen_step1_PBE_opt.py}
+"""
+
+DEFAULT_HPC_SETTING = """\
+# 超算配置（创建项目时由 tf init 复制为 project_setting/hpc.yaml，按项目改）
+name: jzzn                 # 显示在状态表 hpc 列
+ssh_host: jzzn             # 该超算的 ssh 别名
+# 模板映射：gen 要的逻辑名 -> skill 目录里的实际模板文件（2D/3D 各一套，
+# 维度由 gen 脚本自动判定）。换超算 = 改这里（如 submit_hf_vaspstd_2d.tpl）
+template_map:
+  submit_std_2d.tpl: submit_jzzn_vaspstd_2d.tpl
+  submit_std_3d.tpl: submit_jzzn_vaspstd_3d.tpl
+  submit_ncl_2d.tpl: submit_jzzn_vaspncl_2d.tpl
+  submit_ncl_3d.tpl: submit_jzzn_vaspncl_3d.tpl
+"""
+
+DEFAULT_PROJECT_SETTING = """\
+# 项目设置（就近优先：从材料目录向上找最近的 project_setting）
+# 路径占位符：{matdir}=材料目录 {mat}=材料名 {root}=本地项目根
+base_dir: "{matdir}"
+result_dir: "{matdir}/result"     # tf fetch 回拉目的地（每步一个子目录）
+log_dir: "{matdir}/log"           # 该项目的操作日志 tf.log
+# work_dir 缺省继承项目配置 tf_<项目名>.yaml 里的类型定义；只在要为这个
+# 项目单独换超算工作根时才取消注释（优先级高于类型配置）：
+# work_dir: /public/home/wangchao/Fullerene_Network/fullerene_network/test
+# fetch 回拉的文件清单（只拉存在的；按你的体系增删，不同体系可不同）
+fetch_files: [INCAR, POSCAR, POTCAR, KPOINTS, KPOINTS_OPT, kpath.json, submit.sh, OUTCAR, CONTCAR, EIGENVAL, vasprun.xml, queue.out]
+"""
+
+
+# ---------------------------------------------------------------------------
+# 迷你 YAML 解析器（无 PyYAML 时的内置后备，支持本工具配置用到的子集：
+# 缩进嵌套 dict/list、行内/整行注释、引号字符串、行内 [list] 与 {dict}、布尔/数字/null）
+# ---------------------------------------------------------------------------
+def _yaml_strip_comment(line):
+    sq = dq = False
+    for i, ch in enumerate(line):
+        if ch == "'" and not dq:
+            sq = not sq
+        elif ch == '"' and not sq:
+            dq = not dq
+        elif ch == "#" and not sq and not dq and (i == 0 or line[i - 1] in " \t"):
+            return line[:i]
+    return line
+
+
+def _yaml_split_top(s):
+    """按顶层逗号切分（忽略引号/括号内的逗号）。"""
+    parts, depth, sq, dq, cur = [], 0, False, False, ""
+    for ch in s:
+        if ch == "'" and not dq:
+            sq = not sq
+        elif ch == '"' and not sq:
+            dq = not dq
+        elif ch in "[{" and not sq and not dq:
+            depth += 1
+        elif ch in "]}" and not sq and not dq:
+            depth -= 1
+        if ch == "," and depth == 0 and not sq and not dq:
+            parts.append(cur)
+            cur = ""
+        else:
+            cur += ch
+    if cur.strip():
+        parts.append(cur)
+    return parts
+
+
+def _yaml_scalar(v):
+    v = v.strip()
+    if v in ("", "null", "Null", "NULL", "~"):
+        return None
+    if v in ("true", "True", "TRUE"):
+        return True
+    if v in ("false", "False", "FALSE"):
+        return False
+    if len(v) >= 2 and v[0] == v[-1] and v[0] in "\"'":
+        return v[1:-1]
+    if v.startswith("[") and v.endswith("]"):
+        inner = v[1:-1].strip()
+        return [_yaml_scalar(x) for x in _yaml_split_top(inner)] if inner else []
+    if v.startswith("{") and v.endswith("}"):
+        inner = v[1:-1].strip()
+        d = {}
+        for part in _yaml_split_top(inner):
+            k, _, vv = part.partition(":")
+            d[k.strip().strip("\"'")] = _yaml_scalar(vv)
+        return d
+    try:
+        return int(v)
+    except ValueError:
+        pass
+    try:
+        return float(v)
+    except ValueError:
+        pass
+    return v
+
+
+def _mini_yaml(text):
+    raw_lines = text.splitlines()
+    blocks = {}
+    lines = []
+    i = 0
+    while i < len(raw_lines):          # v3.13：支持 key: | / key: > 多行原文块
+        raw = raw_lines[i]             # （kpoints.yaml 等需要原样保留换行的内容）
+        s = _yaml_strip_comment(raw).rstrip()
+        n = i + 1
+        i += 1
+        if not s.strip():
+            continue
+        indent = len(s) - len(s.lstrip(" "))
+        stripped = s.strip()
+        mb = re.match(r"^([^-][^:]*):\s*([|>])[+-]?\s*$", stripped)
+        if mb:
+            key, style = mb.group(1).strip(), mb.group(2)
+            chomp = "+" if stripped.endswith("+") else ("-" if stripped.endswith("-") else "")
+            body = []
+            while i < len(raw_lines):
+                l2 = raw_lines[i]
+                if not l2.strip():
+                    body.append("")
+                    i += 1
+                    continue
+                ind2 = len(l2) - len(l2.lstrip(" "))
+                if ind2 > indent:
+                    body.append(l2)
+                    i += 1
+                else:
+                    break
+            while body and not body[-1].strip():
+                body.pop()
+            nonempty = [l for l in body if l.strip()]
+            base = min((len(l) - len(l.lstrip(" ")) for l in nonempty),
+                       default=indent + 1)
+            body = [l[base:] if l.strip() else "" for l in body]
+            val = " ".join(l.strip() for l in body) if style == ">" else "\n".join(body)
+            if chomp != "-":
+                val += "\n"
+            token = "\x00BLOCK%d\x00" % len(blocks)
+            blocks[token] = val
+            stripped = "%s: \"%s\"" % (key, token)
+        lines.append([indent, stripped, n])
+    pos = [0]
+
+    def parse_block(indent):
+        c = lines[pos[0]][1]
+        return parse_list(indent) if (c == "-" or c.startswith("- ")) else parse_dict(indent)
+
+    def parse_dict(indent):
+        d = {}
+        while pos[0] < len(lines):
+            ind, content, n = lines[pos[0]]
+            if ind < indent or content == "-" or content.startswith("- "):
+                break
+            if ind > indent:
+                raise ValueError("配置第 %d 行缩进错误。" % n)
+            key, _, val = content.partition(":")
+            key, val = key.strip(), val.strip()
+            pos[0] += 1
+            if val:
+                d[key] = _yaml_scalar(val)
+            elif pos[0] < len(lines) and lines[pos[0]][0] > ind:
+                d[key] = parse_block(lines[pos[0]][0])
+            else:
+                d[key] = None
+        return d
+
+    def parse_list(indent):
+        lst = []
+        while pos[0] < len(lines):
+            ind, content, n = lines[pos[0]]
+            if ind != indent or not (content == "-" or content.startswith("- ")):
+                break
+            item = content[1:].strip()
+            pos[0] += 1
+            if not item:
+                lst.append(parse_block(lines[pos[0]][0])
+                           if pos[0] < len(lines) and lines[pos[0]][0] > ind else None)
+            elif ":" in item and item[0] not in "\"'{":
+                k, _, v = item.partition(":")
+                d = {k.strip(): _yaml_scalar(v) if v.strip() else None}
+                while pos[0] < len(lines) and lines[pos[0]][0] > ind:
+                    ind2, c2, n2 = lines[pos[0]]
+                    if c2 == "-" or c2.startswith("- "):
+                        break
+                    k2, _, v2 = c2.partition(":")
+                    k2, v2 = k2.strip(), v2.strip()
+                    pos[0] += 1
+                    if v2:
+                        d[k2] = _yaml_scalar(v2)
+                    elif pos[0] < len(lines) and lines[pos[0]][0] > ind2:
+                        d[k2] = parse_block(lines[pos[0]][0])
+                    else:
+                        d[k2] = None
+                lst.append(d)
+            else:
+                lst.append(_yaml_scalar(item))
+        return lst
+
+    if not lines:
+        return {}
+    result = parse_block(lines[0][0])
+    if pos[0] < len(lines):
+        raise ValueError("配置第 %d 行附近无法解析。" % lines[pos[0]][2])
+
+    def restore(o):  # 还原多行块占位符
+        if isinstance(o, str) and o in blocks:
+            return blocks[o]
+        if isinstance(o, list):
+            return [restore(x) for x in o]
+        if isinstance(o, dict):
+            return {k: restore(v) for k, v in o.items()}
+        return o
+    return restore(result)
+
+
+def load_config(path):
+    if path is None:
+        for c in CONFIG_SEARCH:
+            if os.path.isfile(c):
+                path = c
+                break
+    if path is None:
+        return {}, None
+    try:
+        with open(path, encoding="utf-8") as f:
+            text = f.read()
+    except OSError as e:
+        sys.exit("错误：配置文件 %s 读取失败（%s）。" % (path, e.strerror or e))
+    if path.endswith(".json"):
+        return (json.loads(text) or {}), path
+    try:
+        import yaml
+        return (yaml.safe_load(text) or {}), path
+    except ImportError:
+        try:
+            return (_mini_yaml(text) or {}), path
+        except ValueError as e:
+            sys.exit("错误：本机 python 没有 PyYAML，内置解析器又报错：%s" % e)
+
+
+def scan_project_configs(roots):
+    """扫描项目根下 project_setting/tf_*.yaml（根自身 + 一层子目录）。
+    返回 [(配置名, 路径, 项目目录)]；配置名（tf_<名>.yaml 的 <名>）全局唯一，重复即报错。"""
+    import glob as _glob
+    seen, found = {}, []
+    for r in roots:
+        r = os.path.realpath(os.path.expanduser(str(r)))
+        if not os.path.isdir(r):
+            print("警告：project_roots 里的 %s 不存在，跳过。" % r, file=sys.stderr)
+            continue
+        for pat in ("project_setting/tf_*.yaml", "*/project_setting/tf_*.yaml",
+                    "*/*/project_setting/tf_*.yaml"):  # 材料级：C20/qHPC20/project_setting
+            for p in sorted(_glob.glob(os.path.join(r, pat))):
+                name = os.path.basename(p)[len("tf_"):-len(".yaml")]
+                if name in seen and seen[name] != p:
+                    sys.exit("错误：项目配置名重复 tf_%s.yaml：\n  %s\n  %s\n"
+                             "命名规则 tf_<项目名>.yaml，全局唯一，请改其中一个的名字。"
+                             % (name, seen[name], p))
+                seen[name] = p
+                found.append((name, p, os.path.dirname(os.path.dirname(p))))
+    return found
+
+
+def merge_project_configs(cfg):
+    """把项目配置（project_setting/tf_*.yaml）的 task_types 合并进全局配置。
+    同 key：项目配置作为该类型的一个"段"（独立 local_root，缺省字段继承全局/主定义）。
+    local_root 缺省 = 该 project_setting 的父目录（项目自包含，可不写）。"""
+    roots = cfg.get("project_roots") or []
+    if not roots:
+        roots = [t.get("local_root") for t in (cfg.get("task_types") or {}).values()
+                 if isinstance(t, dict) and t.get("local_root")]
+    found = scan_project_configs(roots)
+    if not found:
+        return cfg
+    tt = cfg.setdefault("task_types", {})
+    for name, path, proj_dir in found:
+        try:
+            pc = _load_yaml_file(path)
+        except OSError as e:
+            sys.exit("错误：项目配置 %s 读取失败：%s" % (path, e))
+        for key, seg in (pc.get("task_types") or {}).items():
+            seg = dict(seg or {})
+            seg["_base_dir"] = os.path.dirname(path)
+            lr = seg.get("local_root")
+            if lr:
+                lr = str(lr)
+                if not os.path.isabs(lr):
+                    lr = os.path.normpath(os.path.join(proj_dir, lr))
+                seg["local_root"] = os.path.expanduser(lr)
+            elif os.path.isfile(os.path.join(proj_dir, "POSCAR")):
+                # 材料级 project_setting（qHPC20/project_setting）：
+                # 缺省 local_root = 上一级（材料名 = 目录名，如 qHPC20）
+                seg["local_root"] = os.path.dirname(proj_dir)
+            else:
+                # 项目/体系级（C20/project_setting）：缺省 local_root = 父目录
+                seg["local_root"] = proj_dir
+            seg["_from"] = os.path.realpath(path)
+            if key in tt and tt[key] is not seg:
+                tt[key].setdefault("_segments", []).append(seg)
+            else:
+                tt[key] = seg
+    return cfg
+
+
+# 能带画图步骤（v3.21）：gen 在材料目录运行（不提交 SLURM），
+# 产出 stepN_band_plot/{band.png,band.dat,band_summary.json,...}。
+# 状态语义与计算步骤不同：completed / not started / error。
+# 类型配置 plot_steps: false 可关闭（默认开）。
+PLOT_STEP_DEFS = [
+    {"name": "step3_band_plot", "label": "S3.1_plot",
+     "gen": "gen_step3.1_plot_band.py", "check": "plot", "run": "gen",
+     "gen_need": [], "after": "step3_PBE",
+     "done_marker": "band_summary.json", "fetch_all": True},
+    {"name": "step4_band_plot", "label": "S4.1_plot",
+     "gen": "gen_step4.1_plot_band.py", "check": "plot", "run": "gen",
+     "gen_need": [], "after": "step4_HSE",
+     "done_marker": "band_summary.json", "fetch_all": True},
+]
+
+
+def _filter_run_steps(t):
+    """run_steps: 只保留指定步骤（子集，顺序不变）。
+    元素写法：序号 1/2/3/4（第 N 个计算步骤；三段式弛豫时 1 = step1a/b/c
+    三段全含，只跑某一段就写步骤名或 label，如 step1a_PBE_opt / S1a_ion）、
+    3.1/4.1（画图步骤）。未配置 = 全部步骤。"""
+    rs = t.get("run_steps")
+    if not rs:
+        return
+    steps = t.get("steps") or []
+    toks = rs if isinstance(rs, list) else [rs]
+
+    def match(s, tok):
+        name = str(s.get("name", ""))
+        ts = str(tok).strip()
+        if ts in ("3.1", "4.1"):   # yaml 里 3.1 可能是浮点，统一转字符串
+            return name == "step%s_band_plot" % ts[0]
+        if ts.isdigit():
+            # step1..step4；三段式弛豫的 step1a/b/c 前缀同为 step1，一并归入序号 1
+            return name.startswith("step%d" % int(ts)) and "band_plot" not in name
+        return ts == name or ts == str(s.get("label", ""))
+
+    kept, kept_ids = [], set()
+    for tok in toks:
+        for s in steps:
+            if match(s, tok) and id(s) not in kept_ids:
+                kept.append(s)
+                kept_ids.add(id(s))
+    if not kept:
+        sys.exit("错误：%s 的 run_steps 没有匹配到任何步骤（可用：%s）。"
+                 % (t["key"], ", ".join(str(s.get("name")) for s in steps)))
+    order = {id(s): i for i, s in enumerate(steps)}
+    kept.sort(key=lambda s: order[id(s)])
+    t["steps"] = kept
+
+
+def _inject_plot_steps(t):
+    """按类型配置注入画图步骤：plot_steps: false 关闭；已存在同名步骤不重复加。
+    插入位置：对应计算步骤之后（step3_band_plot 跟在 step3* 后，依此类推）。"""
+    steps = t.get("steps")
+    if not isinstance(steps, list) or not steps:
+        return
+    t["steps"] = list(steps)   # 段继承 steps 是浅拷贝共享同一列表：先复制再改，
+    steps = t["steps"]         # 否则某个段关不掉（plot_steps: false 被别的段污染）
+    if t.get("plot_steps") is False:
+        # 关闭时还要把（可能已被共享列表注入的）画图步骤剔除
+        t["steps"] = [s for s in steps
+                      if s.get("name") not in {d["name"] for d in PLOT_STEP_DEFS}]
+        return
+    names = {s.get("name") for s in steps}
+    for d in PLOT_STEP_DEFS:
+        if d["name"] in names:
+            continue
+        pos = None
+        for i, s in enumerate(steps):
+            # v1.1：锚点用完整前缀（step3_PBE/step4_HSE）——否则 elastic 等
+            # 其他技能的 step3_xxx 会被误注入不存在的 band 画图步骤
+            if str(s.get("name", "")).startswith(d["after"]):
+                pos = i
+        if pos is None:
+            continue   # 该类型没有能带步骤，不注入
+        d2 = {k: v for k, v in d.items() if k != "after"}
+        steps.insert(pos + 1, d2)
+
+
+
+def get_types(cfg, tt=None, root_override=None):
+    """把配置归一化成类型列表；应用 -tt 过滤和 ROOT 覆盖。
+    项目配置合并进来的同 key 段在此展开为多个类型实例（key 相同，local_root 不同）。"""
+    raw = cfg.get("task_types")
+    types = []
+    if raw:
+        for k, tc in raw.items():
+            t = dict(tc or {})
+            t["key"] = str(k)
+            segs = t.pop("_segments", []) or []
+            for s in segs:                       # 段 = 主定义 + 覆盖字段
+                s2 = dict(t)
+                s2.update({k2: v for k2, v in s.items() if v is not None})
+                s2["key"] = str(k)
+                types.append(s2)
+            # 主定义自身无 local_root/root 时只作骨架（发现交给各段；
+            # 暂时没有段也不报错——比如刚 init 一个新项目之前）
+            if t.get("local_root") or t.get("root"):
+                types.append(t)
+    else:
+        t = {k: cfg[k] for k in ("root", "steps", "gen_dir", "materials", "desc")
+             if k in cfg}
+        t["key"] = "-"
+        types.append(t)
+    # v1.1：all_keys 取全局定义的骨架全集——只定义了骨架、还没有项目挂段的
+    # 类型（如新加的 elastic）此前不在 types 里，-tt 会误报"没有任务类型"
+    all_keys = [str(k) for k in (raw or {}).keys()] or [t["key"] for t in types]
+    for t in types:
+        if not t.get("root"):
+            t["root"] = cfg.get("root")
+        t.setdefault("desc", t["key"])
+    if tt:
+        if tt not in all_keys:
+            sys.exit("错误：没有任务类型 '%s'（已定义：%s）。"
+                     % (tt, ", ".join(all_keys)))
+        types = [t for t in types if t["key"] == tt]
+        if not types:
+            print("（%s：类型已在全局 tf.yaml 定义，但还没有项目挂这个类型。\n"
+                  "  在材料的 project_setting/tf_<项目名>.yaml 里加一段  %s:  ，\n"
+                  "  或用  tf -tt %s -p <材料> init  生成项目配置。）" % (tt, tt, tt))
+    if root_override:
+        if len(types) != 1:
+            sys.exit("错误：配置了多个任务类型时，命令行指定 ROOT 必须同时用 -tt 指定类型。")
+        types[0]["root"] = root_override
+    for t in types:
+        _inject_plot_steps(t)   # v3.21：注入能带画图步骤（plot_steps: false 关闭）
+        _filter_run_steps(t)    # v1.0：run_steps 自定义步骤子集
+    for t in types:
+        if not t.get("root") and not t.get("local_root"):
+            sys.exit("错误：任务类型 %s 没有 root/local_root"
+                     "（在配置里写 local_root 或 root，或命令行指定）。" % t["key"])
+        if t.get("local_root") and t.get("steps") is None:
+            skels = [k for k, tc in (cfg.get("task_types") or {}).items()
+                     if tc and tc.get("steps")]
+            src = t.get("_from") or "project_setting/tf_*.yaml"
+            sys.exit("错误：类型 %s 在全局 tf.yaml 里没有对应定义（继承不到 steps）。\n"
+                     "来源文件：%s\n"
+                     "通常是该文件的类型名和全局 tf.yaml 不一致（如 bd 改名 band 后没同步）。\n"
+                     "全局可用的类型名：%s。修正命令：\n"
+                     "  sed -i 's/^  %s:/  %s:/' %s"
+                     % (t["key"], src, ", ".join(skels) or "（无）",
+                        t["key"], skels[0] if skels else "band", src))
+    return types
+
+
+def step_cfg(t, sname, m=None):
+    """步骤配置；v3.1 起材料可携带所属段（_seg），段配置优先于类型条目。"""
+    steps = ((m or {}).get("_seg") or {}).get("steps_cfg") \
+        or t.get("steps_cfg") or t.get("steps") or []
+    for s in steps:
+        if s.get("name") == sname:
+            return s
+    return {}
+
+
+# ---------------------------------------------------------------------------
+# 本地材料发现与 project_setting（v3 本地优先模式）
+# ---------------------------------------------------------------------------
+def _natkey(s):
+    return [int(x) if x.isdigit() else x for x in re.split(r"(\d+)", s)]
+
+
+def discover_local(local_root):
+    """本地项目根下发现有 POSCAR 的目录（root 自身 + ≤2 层嵌套；
+    project_setting/result/log 天然无 POSCAR）。
+    v1.1：root 自身也算——"一材料一项目"（local_root 直指材料目录，
+    如 Ela1 挂 project_roots 根下）此前发现不到材料；与远端 discover
+    的 cands=[root] 行为对齐。"""
+    import glob as _glob
+    root = os.path.realpath(os.path.expanduser(local_root))
+    mats, picked = [], []
+    # v1.3.1：已被识别为材料的目录，其内部不再嵌套发现材料——否则在材料
+    # 目录里建个带 POSCAR 的 test/ 备份目录都会被当成新材料自动开算
+    def _under_picked(d):
+        rd = os.path.realpath(d)
+        return any(rd == p or rd.startswith(p + os.sep) for p in picked)
+    if os.path.isfile(os.path.join(root, "POSCAR")):
+        mats.append({"name": os.path.basename(root), "lpath": root})
+        picked.append(root)
+    for pat in ("*", "*/*"):
+        for d in sorted(_glob.glob(os.path.join(root, pat))):
+            if (os.path.isdir(d)
+                    and os.path.isfile(os.path.join(d, "POSCAR"))
+                    and not _under_picked(d)):
+                mats.append({"name": os.path.relpath(d, root), "lpath": d})
+                picked.append(os.path.realpath(d))
+    mats.sort(key=lambda m: _natkey(m["name"]))
+    return root, mats
+
+
+_PS_CACHE = {}
+
+
+def find_ps_dir(matdir, rootstop):
+    """从材料目录向上找最近的 project_setting/（就近优先），找不到返回 None。"""
+    d = os.path.realpath(matdir)
+    rootstop = os.path.realpath(rootstop)
+    while True:
+        cand = os.path.join(d, "project_setting")
+        if os.path.isdir(cand):
+            return cand
+        if d == rootstop or not d.startswith(rootstop):
+            return None
+        d = os.path.dirname(d)
+
+
+def _load_yaml_file(path):
+    if not os.path.isfile(path):
+        return {}
+    with open(path, encoding="utf-8") as f:
+        return _mini_yaml(f.read()) or {}
+
+
+def load_project_settings(ps_dir):
+    """读取 project_setting 下的 setting.yaml 和 hpc.yaml（带缓存）。"""
+    if ps_dir in _PS_CACHE:
+        return _PS_CACHE[ps_dir]
+    st = _load_yaml_file(os.path.join(ps_dir, "setting.yaml")) if ps_dir else {}
+    hpc = _load_yaml_file(os.path.join(ps_dir, "hpc.yaml")) if ps_dir else {}
+    ps = {"dir": ps_dir, "setting": st, "hpc": hpc}
+    _PS_CACHE[ps_dir] = ps
+    return ps
+
+
+def pkg_setting_path(name):
+    """taskflow 包内 setting/<name>.yaml 的位置（兼容 versions/vX 与平铺布局）。"""
+    here = os.path.dirname(os.path.realpath(__file__))
+    for cand in (os.path.join(here, "..", "..", "setting", name),
+                 os.path.join(here, "..", "setting", name),
+                 os.path.expanduser("~/.config/taskflow/setting/" + name)):
+        if os.path.isfile(cand):
+            return cand
+    return None
+
+
+def resolve_material_local(t, root, m):
+    """给本地发现的材料补齐：project_setting、hpc、路径、远端目录、有效 host。"""
+    ps = load_project_settings(find_ps_dir(m["lpath"], root))
+    st, hpc = ps["setting"], ps["hpc"]
+    # 项目没有 hpc.yaml（或字段缺失）时回退到类型 hpc 配置：
+    # v1.0 起 hpc 可写内联字典（把 setting/jzzn.yaml 的内容直接写进 tf.yaml），
+    # 字符串仍是包内 setting/<hpc>.yaml 文件名
+    thpc = t.get("hpc")
+    if isinstance(thpc, dict):
+        dhpc = dict(thpc)
+    else:
+        dhpc = {}
+        dflt = pkg_setting_path(str(thpc or "jzzn") + ".yaml")
+        if dflt:
+            dhpc = _load_yaml_file(dflt)
+    fmt = {"matdir": m["lpath"], "mat": m["name"], "root": root}
+
+    def expand(v, default):
+        v = v or default
+        return v.format(**fmt) if isinstance(v, str) else v
+
+    m["ps"] = ps
+    # v1.1：skill_subdir——材料目录下按技能建子目录（如 elastic/、band/）。
+    # 远端步骤目录 = work_dir/材料/<subdir>/stepN；本地 result = 材料/<subdir>/result。
+    # 子目录名 dir_name 缺省 = 类型 key。老项目平铺结构不开此开关即可。
+    m["_subdir"] = (str(t.get("dir_name") or t["key"])
+                    if t.get("skill_subdir") else None)
+    m["_skill_dir_local"] = (os.path.join(m["lpath"], m["_subdir"])
+                             if m["_subdir"] else None)
+    # v1.6：技能子目录里可放私有 hpc.yaml——同一材料的不同技能跑不同超算。
+    # 字段级覆盖，优先级：材料/<技能>/hpc.yaml ＞ project_setting/hpc.yaml
+    # ＞ 段级 hpc（内联 dict 或包内 setting/<名>.yaml）。
+    if m["_skill_dir_local"]:
+        shpc = _load_yaml_file(os.path.join(m["_skill_dir_local"], "hpc.yaml"))
+        if shpc:
+            merged = dict(hpc)
+            merged.update(shpc)
+            if hpc.get("template_map") or shpc.get("template_map"):
+                tm = dict(hpc.get("template_map") or {})
+                tm.update(shpc.get("template_map") or {})   # 映射级合并
+                merged["template_map"] = tm
+            hpc = merged
+    m["hpc_name"] = (hpc.get("name") or dhpc.get("name")
+                     or (t.get("hpc") if isinstance(t.get("hpc"), str) else None)
+                     or "jzzn")
+    m["host_eff"] = hpc.get("ssh_host") or dhpc.get("ssh_host") or None
+    m["work_dir_eff"] = st.get("work_dir") or t.get("work_dir") or t.get("root")
+    # v1.3：skill_subdir 开启时 result/log 默认进技能子目录；setting.yaml 里
+    # 仍是 init 模板默认值（{matdir}/result）的视为"未定制"一并升级，
+    # 定制过路径的尊重原值（elastic init 后不用再手改 setting）
+    rd, ld = st.get("result_dir"), st.get("log_dir")
+    if m["_subdir"]:
+        if not rd or rd == "{matdir}/result":
+            rd = "{matdir}/%s/result" % m["_subdir"]
+        if not ld or ld == "{matdir}/log":
+            ld = "{matdir}/%s/log" % m["_subdir"]
+    m["result_dir"] = expand(rd, "{matdir}/%s/result" % m["_subdir"]
+                             if m["_subdir"] else "{matdir}/result")
+    m["log_dir"] = expand(ld, "{matdir}/%s/log" % m["_subdir"]
+                          if m["_subdir"] else "{matdir}/log")
+    m["fetch_files"] = st.get("fetch_files") or [
+        "INCAR", "POSCAR", "POTCAR", "KPOINTS", "KPOINTS_OPT", "kpath.json",
+        "submit.sh", "OUTCAR", "CONTCAR", "EIGENVAL", "vasprun.xml", "queue.out"]
+    tmap = dict(dhpc.get("template_map") or {})   # 映射级合并：包内默认补缺，
+    tmap.update(hpc.get("template_map") or {})    # 项目 hpc.yaml 覆盖同名项
+    m["template_map"] = tmap
+    m["rpath"] = (os.path.join(m["work_dir_eff"], m["name"], m["_subdir"] or "")
+                  if m["work_dir_eff"] else None)
+    if m["rpath"]:
+        m["rpath"] = os.path.normpath(m["rpath"])
+    return m
+
+
+def log_action(m, text):
+    """往该材料的 log_dir/tf.log 追加一行操作日志（本地模式才有）。"""
+    ld = m.get("log_dir")
+    if not ld:
+        return
+    try:
+        os.makedirs(ld, exist_ok=True)
+        import datetime
+        ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        with open(os.path.join(ld, "tf.log"), "a", encoding="utf-8") as f:
+            f.write("%s  %s\n" % (ts, text))
+    except OSError:
+        pass
+
+
+# ---------------------------------------------------------------------------
+# 远端执行
+# ---------------------------------------------------------------------------
+def _dedup_segments(mats):
+    """多段（项目配置）发现同名材料时：材料归属"其 project_setting 里 tf_*.yaml
+    所对应的那个段"（如 C20/qHPC20 归 C20/project_setting/tf_C20.yaml 的段）；
+    材料没有 project_setting 时归全局段。无法判定归属的重复保留给重名检查。"""
+    import glob as _glob
+    groups = {}
+    order = []
+    for m in mats:
+        key = os.path.realpath(m.get("lpath") or m["name"])  # v3.11：按材料目录去重
+        if key not in groups:                                # （同名/不同名的重复发现都算）
+            groups[key] = []
+            order.append(key)
+        groups[key].append(m)
+
+    def owner_cfg(m):
+        psdir = (m.get("ps") or {}).get("dir")
+        if psdir:
+            cfgs = sorted(_glob.glob(os.path.join(psdir, "tf_*.yaml")))
+            if cfgs:
+                return os.path.realpath(cfgs[0])
+        return None
+
+    out = []
+    for n in order:
+        g = groups[n]
+        if len(g) == 1:
+            out.append(g[0])
+            continue
+        owned = [m for m in g
+                 if (m.get("_seg") or {}).get("_from") == owner_cfg(m)]
+        if owned:
+            out.append(owned[0])
+        elif owner_cfg(g[0]) is None:
+            out.append(g[0])  # 无 ps 的新材料被多个重叠段发现 → 只留首个，
+                              # 交给"未初始化"提示，不触发重名报错
+        else:  # 归属段存在但名字不同（如材料级段 qHPC20 vs 体系段 C20/qHPC20）：
+            out.append(max(g, key=lambda m: len((m.get("_seg") or {}).get("_base_dir") or "")))
+                       # 取 _base_dir 最深（ps 离材料最近）的发现
+    out.sort(key=lambda m: _natkey(m["name"]))
+    return out
+
+
+def collect_v3_batch(cfg, segs):
+    """v3 本地模式批量采集：所有段（项目配置）先本地解析，再按 (host, work_dir)
+    全局分组——同组所有段合进一次 ssh 采集；多组之间并行。
+    v3.20 之前每段各发一条 ssh：10 个材料配置就串行 10 次握手（每次 ~2s）。
+    返回按段组织的类型条目列表（保持段顺序，_dedup_segments 归属判定依赖它）。"""
+    resolved = []
+    for t in segs:
+        root, mats = discover_local(t["local_root"])
+        for m in mats:
+            resolve_material_local(t, root, m)
+        steps = []
+        for s in (t.get("steps") or []):
+            sd = {"name": s["name"], "label": s.get("label") or s["name"],
+                  "check": s.get("check", "outcar"), "marker": s.get("marker", ""),
+                  "submit": s.get("submit", "submit.sh")}
+            # v1.8：判据覆盖键非 None 才下发采集器（relax_skip 的 stage、
+            # relax_diag/phrase/pressure_tol 覆盖此前根本传不到远端；
+            # None 会破坏采集器里 .get(k, 默认值) 的语义）
+            for k in ("stage", "relax_diag", "phrase", "pressure_tol",
+                      "done_marker"):
+                if s.get(k) is not None:
+                    sd[k] = s[k]
+            steps.append(sd)
+        resolved.append((t, root, mats, steps))
+
+    by_hw = {}
+    for t, root, mats, steps in resolved:
+        for m in mats:
+            if not m["work_dir_eff"]:
+                sys.exit("错误：%s 的材料 %s 没有 work_dir"
+                         "（在 project_setting/setting.yaml 或类型配置里写）。"
+                         % (t["key"], m["name"]))
+            wd = os.path.normpath(os.path.expanduser(str(m["work_dir_eff"])))
+            by_hw.setdefault((m["host_eff"] or "", wd), []).append((t, steps, m))
+
+    def probe_group(item):
+        (host, wdir), entries = item
+        seg_ms = {}
+        for t, steps, m in entries:   # 同组内按段聚合（保持首次出现顺序）
+            seg_ms.setdefault(id(t), {"t": t, "steps": steps, "ms": []})["ms"].append(m)
+        subs, back = [], []
+        for g in seg_ms.values():
+            # v1.1 skill_subdir：采集键 = 材料名/技能子目录（远端步骤目录多一层），
+            # 回流后 name 复原为材料名（显示与匹配不变）
+            subs.append({"key": g["t"]["key"],
+                         "desc": g["t"].get("desc", g["t"]["key"]),
+                         "root": wdir, "steps": g["steps"],
+                         "materials": ["%s/%s" % (m["name"], m["_subdir"])
+                                       if m.get("_subdir") else m["name"]
+                                       for m in g["ms"]]})
+            back.append(g)
+        d = collect(cfg, subs, host=host or "__default__")
+        return [(g, {x["name"]: x for x in td["materials"]})
+                for g, td in zip(back, d["types"])]
+
+    gitems = sorted(by_hw.items())
+    if len(gitems) > 1:
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=min(6, len(gitems))) as ex:
+            grouped = list(ex.map(probe_group, gitems))
+    else:
+        grouped = [probe_group(x) for x in gitems]
+
+    seg_results = {id(t): [] for t, _, _, _ in resolved}
+    for gots in grouped:
+        for g, got in gots:
+            t = g["t"]
+            for m in g["ms"]:
+                rkey = ("%s/%s" % (m["name"], m["_subdir"])
+                        if m.get("_subdir") else m["name"])
+                if rkey not in got:
+                    continue
+                r = got[rkey]
+                r["name"] = m["name"]   # 采集键带子目录层，显示名复原
+                for k in ("lpath", "ps", "hpc_name", "host_eff", "result_dir",
+                          "log_dir", "fetch_files", "template_map",
+                          "_subdir", "_skill_dir_local", "rpath"):
+                    r[k] = m[k]
+                r["_seg"] = {"steps_cfg": t.get("steps"),
+                             "gen_need": t.get("gen_need"),
+                             "aux_files": t.get("aux_files"),
+                             "skill_dir": t.get("skill_dir"),
+                             "gen_dir": t.get("gen_dir"),
+                             "_base_dir": t.get("_base_dir"),
+                             "_from": t.get("_from")}
+                for s in r["steps"]:
+                    s["_host"] = m["host_eff"]
+                seg_results[id(t)].append(r)
+
+    out = []
+    for t, root, mats, steps in resolved:
+        ms = seg_results[id(t)]
+        ms.sort(key=lambda m: _natkey(m["name"]))
+        out.append({"key": t["key"], "desc": t.get("desc", t["key"]), "root": root,
+                    "local": True, "materials": ms})
+    return out
+
+
+def _ssh_cmd(cfg, host, remote_args):
+    """构造 ssh 命令。v3.17：ControlMaster 连接复用——首条 ssh 建连后，
+    ControlPersist 窗口内（默认 120 秒）的后续 ssh 共用通道，免去重复握手，
+    status/auto-fetch 明显加速。设环境变量 TF_NO_SSH_MUX=1 可关闭。"""
+    opts = ["-o", "BatchMode=yes"]
+    if not os.environ.get("TF_NO_SSH_MUX"):
+        sockdir = os.path.expanduser("~/.ssh")
+        try:
+            os.makedirs(sockdir, exist_ok=True)
+        except OSError:
+            pass
+        opts += ["-o", "ControlMaster=auto",
+                 "-o", "ControlPath=" + os.path.join(sockdir, "tf-%r@%h:%p.sock"),
+                 "-o", "ControlPersist=120"]
+    return ["ssh"] + opts + [host] + remote_args
+
+
+def _ssh_cmd_pre(cfg, host, pre_opts, remote_args):
+    """同 _ssh_cmd，但允许在 host 前追加选项（如 ConnectTimeout）。"""
+    base = _ssh_cmd(cfg, host, [])          # ["ssh", 复用选项..., host]
+    return base[:-1] + pre_opts + [host] + remote_args
+
+
+def collect(cfg, types, host="__default__"):
+    payload = base64.b64encode(
+        json.dumps({"user": cfg.get("user"), "types": types}).encode()).decode()
+    args = ["python3", "-", "--config64", payload]
+    if host == "__default__":
+        host = cfg.get("host")
+    cmd = (_ssh_cmd_pre(cfg, host, ["-o", "ConnectTimeout=10"], args)
+           if host else args)
+    try:
+        r = subprocess.run(cmd, input=COLLECTOR, capture_output=True, text=True, timeout=180)
+    except FileNotFoundError:
+        sys.exit("错误：找不到 ssh 命令。")
+    except subprocess.TimeoutExpired:
+        sys.exit("错误：连接超时（host=%s）。" % host)
+    if r.returncode != 0:
+        sys.exit("错误：远端采集失败。\n" + (r.stderr or "").strip())
+    data = json.loads(r.stdout)
+    if os.environ.get("TF_DEBUG_TIME") and data.get("timings"):
+        tm = data["timings"]
+        print("[计时] 远端分解：squeue %.1fs + 目录探测 %.1fs（其余为 ssh/启动开销）"
+              % (tm.get("squeue", 0), tm.get("probe", 0)), file=sys.stderr)
+    if data.get("squeue_err"):
+        print("警告：squeue 查询失败：%s（队列状态将只按文件判断）" % data["squeue_err"],
+              file=sys.stderr)
+    return data
+
+
+def run_remote(cfg, shell_line, host="__default__", use_stdin=False):
+    """use_stdin=True 时整个脚本经 stdin 投递（bash -s），不受 argv 长度限制
+    （gen 推送大量 base64 文件时必须用，否则 Argument list too long）。"""
+    if host == "__default__":
+        host = cfg.get("host")
+    if use_stdin:
+        cmd = (_ssh_cmd(cfg, host, ["bash -s"]) if host else ["bash", "-s"])
+        r = subprocess.run(cmd, input=shell_line, capture_output=True, text=True)
+    else:
+        cmd = (_ssh_cmd(cfg, host, [shell_line])
+               if host else ["bash", "-c", shell_line])
+        r = subprocess.run(cmd, capture_output=True, text=True)
+    return r.returncode, (r.stdout + r.stderr).strip()
+
+
+def sh_b64(cmd_text):
+    return "echo %s | base64 -d | bash" % base64.b64encode(cmd_text.encode()).decode()
+
+
+# ---------------------------------------------------------------------------
+# 状态判定与标注
+# ---------------------------------------------------------------------------
+SCANCEL_MARK = ".tf_scancel.json"   # lpath 下的"tf stop 取消"标记（v1.4）
+
+
+def _scancel_path(m):
+    lp = m.get("lpath")
+    return os.path.join(lp, SCANCEL_MARK) if lp else None
+
+
+def _scancel_load(m):
+    """返回 {"<tt>/<step_name>": {"jobid":..., "time":...}}；无文件/损坏 → {}。"""
+    p = _scancel_path(m)
+    if not p or not os.path.isfile(p):
+        return {}
+    try:
+        with open(p) as f:
+            d = json.load(f)
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+def _scancel_save(m, marks):
+    p = _scancel_path(m)
+    if not p:
+        return
+    try:
+        if marks:
+            with open(p, "w") as f:
+                json.dump(marks, f, ensure_ascii=False, indent=1)
+        elif os.path.isfile(p):
+            os.remove(p)
+    except OSError:
+        pass
+
+
+def _scancel_set(m, step_name, jobid=None):
+    """tf stop 成功后调用：给该步骤打 scancel 标记（auto 不再自动重跑）。"""
+    marks = _scancel_load(m)
+    marks["%s/%s" % (m.get("tt"), step_name)] = {
+        "jobid": jobid, "time": time.strftime("%Y-%m-%d %H:%M:%S")}
+    _scancel_save(m, marks)
+
+
+def _scancel_clear(m, step_name=None):
+    """step_name=None 清整个材料的标记；否则只清本类型该步骤那条。"""
+    marks = _scancel_load(m)
+    if step_name is None:
+        if marks:
+            _scancel_save(m, {})
+        return
+    key = "%s/%s" % (m.get("tt"), step_name)
+    if key in marks:
+        del marks[key]
+        _scancel_save(m, marks)
+
+
+def step_state(step, blocked):
+    j = step.get("job")
+    if j:
+        st, info = j["state"], (j.get("info") or "")
+        if st == "R":
+            return ("R@%s" % info, "R")
+        if st == "PD":
+            reason = info.strip() or "?"
+            if reason.startswith("(") and reason.endswith(")"):
+                reason = reason[1:-1]
+            return ("PD(%s)" % reason, "PD")
+        return (st, "OTHER")
+    if step["done"]:
+        return ("OK", "OK")
+    if step.get("scancel"):   # v1.4：tf stop 取消的标记（压过 FAIL/TODO）
+        return ("scancel", "SCANCEL")
+    if step.get("plot_error"):
+        return ("FAIL", "FAIL")
+    if blocked:
+        return ("----", "WAIT")
+    if step["has_outcar"] or step["has_slurm_out"]:
+        return ("FAIL", "FAIL")
+    if step["has_incar"]:
+        return ("TODO", "TODO")
+    return ("PREP", "PREP")
+
+
+def annotate(data):
+    for t in data["types"]:
+        for m in t["materials"]:
+            m["tt"] = t["key"]
+            m["desc"] = t["desc"]
+            m["troot"] = t["root"]
+            blocked = False
+            m["active"] = None
+            m["action"] = "-"
+            marks = _scancel_load(m)   # v1.4：tf stop 打的本步骤标记
+            marks_dirty = False
+            for s in m["steps"]:
+                sc = marks.get("%s/%s" % (t["key"], s["name"]))
+                if sc and (s.get("job") or s.get("done")):
+                    # 自愈：已有新作业在跑/结果已完成 → 标记失效，清掉
+                    del marks["%s/%s" % (t["key"], s["name"])]
+                    marks_dirty = True
+                    sc = None
+                if sc:
+                    s["scancel"] = sc
+                s["label_txt"], s["kind"] = step_state(s, blocked)
+                if s["kind"] != "OK" and m["active"] is None and not blocked:
+                    m["active"] = s
+                if s["kind"] != "OK":
+                    blocked = True
+            if marks_dirty:
+                _scancel_save(m, marks)
+            a = m["active"]
+            if a:
+                if a["kind"] == "FAIL":
+                    m["action"] = "retry " + a["label"]
+                elif a["kind"] in ("TODO", "PREP"):
+                    m["action"] = "start " + a["label"]
+                elif a["kind"] == "SCANCEL":
+                    m["action"] = "start " + a["label"] + "（曾被 stop）"
+    return data
+
+
+def check_duplicates(data):
+    """同一类型内项目名不允许重复（报错退出；跨段/跨条目聚合检查）；
+    basename 重复给警告。跨类型同名允许。"""
+    errs = []
+    by_key = {}
+    for t in data["types"]:
+        by_key.setdefault(t["key"], []).extend(m["name"] for m in t["materials"])
+    for key, names in by_key.items():
+        dups = sorted({n for n in names if names.count(n) > 1})
+        if dups:
+            errs.append("任务类型 %s 下项目名称重复：%s" % (key, ", ".join(dups)))
+        bases = [os.path.basename(n) for n in names]
+        bdups = sorted({b for b in bases if bases.count(b) > 1})
+        if bdups:
+            print("警告：任务类型 %s 里有重复的 basename：%s，-p 时请写完整名。"
+                  % (key, ", ".join(bdups)), file=sys.stderr)
+    if errs:
+        sys.exit("错误：\n" + "\n".join(errs))
+
+
+# ---------------------------------------------------------------------------
+# 输出
+# ---------------------------------------------------------------------------
+def _cell_word(s):
+    """步骤第一行状态词：running / pd / error / done / waiting。
+    画图步骤（plot）：completed / not started / error。"""
+    if s.get("plot"):
+        k = s["kind"]
+        if k == "OK":
+            return "completed"
+        if k == "FAIL":
+            return "error"
+        return "not started"
+    j = s.get("job")
+    if j:
+        return "running" if j["state"] in ("R", "CG", "CF") else "pd"
+    k = s["kind"]
+    if k == "OK":
+        return "done"
+    if k == "FAIL":
+        return "error"
+    if k == "SCANCEL":
+        return "scancel"   # v1.4：tf stop 取消，auto 不会重跑
+    return "waiting"  # TODO（输入就绪）/ PREP（未生成）/ 被前序阻塞
+
+
+def _cell_info(s):
+    """步骤第二行：running → "节点 任务号 已跑时长"；pd → "任务号 (原因)"；否则 -。"""
+    if s.get("plot"):
+        return "-"
+    j = s.get("job")
+    if not j:
+        sc = s.get("scancel")
+        if sc:   # v1.4：第二行标出原作业号，一眼看出是被谁取消的
+            return "已取消(%s)" % (sc.get("jobid") or "?")
+        return "-"
+    if j["state"] in ("R", "CG", "CF"):
+        return " ".join(x for x in (j.get("info"), j["id"], j.get("time")) if x)
+    reason = (j.get("info") or "").strip()
+    return "%s (%s)" % (j["id"], reason) if reason else j["id"]
+
+
+def _group_word(ms):
+    """v1.8：分组列状态词（同 group 的成员聚合，如三段式弛豫的 S1_relax 总列）。
+    全 done → done；有作业 → running/pd；有 FAIL → error；否则 waiting。"""
+    if all(s["kind"] == "OK" for s in ms):
+        return "done"
+    for s in ms:
+        j = s.get("job")
+        if j:
+            return "running" if j["state"] in ("R", "CG", "CF") else "pd"
+    if any(s["kind"] == "FAIL" for s in ms):
+        return "error"
+    if any(s["kind"] == "SCANCEL" for s in ms):   # v1.4
+        return "scancel"
+    return "waiting"
+
+
+def _group_info(ms):
+    """分组列第二行：有作业显示作业实况；未全完成时指明走到哪个组员。"""
+    for s in ms:
+        if s.get("job"):
+            return _cell_info(s)
+    if all(s["kind"] == "OK" for s in ms):
+        return "-"
+    for s in ms:
+        if s["kind"] != "OK":
+            return s["label"]
+    return "-"
+
+
+def render_table(data):
+    types = data["types"]
+    # v1.3.3：多技能按类型分表——此前全局列 = 所有技能步骤的并集，
+    # band 材料空挂 elastic 三列、elastic 材料空挂 band 八列，表宽爆炸。
+    # 每个技能一张表，列 = 该技能自己的步骤；同材料双技能两张表各出现一次。
+    if len(types) > 1:
+        for t in types:
+            print("== %s（%s，%d 个材料）==" % (
+                t["key"], t.get("desc") or t["key"], len(t["materials"])))
+            sub = dict(data)
+            sub["types"] = [t]
+            render_table(sub)
+            print()
+        return
+    # v1.8：步骤分组列——步骤配置写 group: 列名 时同组步骤合并为一列
+    # （如三段式弛豫 step1a/b/c 合成 S1_relax 总列；-j 仍按原名/label 指组员）。
+    # 段合并后类型条目不带 steps，完整步骤配置在每材料的 _seg.steps_cfg。
+    gmap = {}   # (id(m), step_name) -> group 列名
+    for t in types:
+        for m in t["materials"]:
+            for sc in ((m.get("_seg") or {}).get("steps_cfg") or []):
+                if sc.get("group"):
+                    gmap[(id(m), sc["name"])] = str(sc["group"])
+
+    def col_of(m, s):
+        return gmap.get((id(m), s["name"])) or s["label"]
+
+    labels = []
+    for t in types:
+        for m in t["materials"]:
+            for s in m["steps"]:
+                c = col_of(m, s)
+                if c not in labels:
+                    labels.append(c)
+    all_mats = [(t, m) for t in types for m in t["materials"]]
+    if not all_mats:
+        print("没有找到任何材料目录。")
+        return
+    headers = ["Material", "tt", "hpc", "dim"] + labels   # v1.1：去掉总体 Status 列
+    pairs = []  # (t, row1, row2)；row1 = 各步骤状态词；row2 = 节点/任务号/时长
+    for t, m in all_mats:
+        cols = {}
+        for s in m["steps"]:
+            cols.setdefault(col_of(m, s), []).append(s)
+        word, act = {}, {}
+        for c, ms in cols.items():
+            if len(ms) == 1:
+                word[c] = _cell_word(ms[0])
+                act[c] = _cell_info(ms[0])
+            else:
+                word[c] = _group_word(ms)
+                act[c] = _group_info(ms)
+        hpc = m.get("hpc_name") or data.get("host") or "-"
+        dim = m.get("dim") or "-"
+        row1 = [m["name"], t["key"], hpc, dim] + [word.get(x, "") for x in labels]
+        row2 = ["", "", "", ""] + [act.get(x, "") for x in labels]
+        pairs.append((t, row1, row2))
+    rows = [r for _, r1, r2 in pairs for r in (r1, r2)]
+    widths = [max(len(h), *(len(r[i]) for r in rows)) for i, h in enumerate(headers)]
+
+    def line(ch="-"):
+        return "+" + "+".join(ch * (w + 2) for w in widths) + "+"
+
+    def fmt(cells):
+        return "|" + "|".join(" %s " % c.ljust(w) for c, w in zip(cells, widths)) + "|"
+
+    print(line())
+    print(fmt(headers))
+    print(line("="))
+    prev_tt = None
+    for t, r1, r2 in pairs:
+        if prev_tt is not None and t["key"] != prev_tt:
+            print(line())
+        print(fmt(r1))
+        print(fmt(r2))
+        prev_tt = t["key"]
+    print(line())
+
+    n_done = sum(1 for _, m in all_mats if all(s["kind"] == "OK" for s in m["steps"]))
+    n_wait = sum(1 for _, m in all_mats if any(s["kind"] in ("R", "PD", "OTHER")
+                                               for s in m["steps"]))
+    n_act = sum(1 for _, m in all_mats if m["action"] != "-")
+    n_sc = sum(1 for _, m in all_mats if any(s["kind"] == "SCANCEL"
+                                           for s in m["steps"]))
+    print("Total: %d | Done: %d | Waiting: %d | Actionable: %d%s"
+          % (len(all_mats), n_done, n_wait, n_act,
+             " | Scancel: %d" % n_sc if n_sc else ""))
+    for t in types:
+        if not t["materials"]:
+            print("（%s: %s 下没有找到材料）" % (t["key"], t["root"]))
+    attn = [(m["tt"], m["name"], s["label"], s["diag"]) for _, m in all_mats
+            for s in m["steps"] if s["kind"] == "FAIL"]
+    if attn:
+        print("\nFAILED / NEEDS ATTENTION:")
+        for tt, name, lab, diag in attn:
+            print("  [%-3s] %-22s %-10s %s" % (tt, name, lab, diag))
+    scl = [(m["tt"], m["name"], s["label"]) for _, m in all_mats
+           for s in m["steps"] if s["kind"] == "SCANCEL"]
+    if scl:
+        print("\nSCANCELLED（tf stop 取消，auto 不会重跑；重跑用 "
+              "-status scancel start / rerun）:")
+        for tt, name, lab in scl:
+            print("  [%-3s] %-22s %s" % (tt, name, lab))
+
+
+def render_detail(m):
+    extra = ""
+    if m.get("hpc_name"):
+        extra += "\nHPC: %s" % m["hpc_name"]
+    if m.get("dim"):
+        extra += "\nDim: %s" % m["dim"]
+    if m.get("lpath"):
+        extra += "\nLocal: %s" % m["lpath"]
+    if m.get("result_dir"):
+        extra += "\nResult: %s" % m["result_dir"]
+    print("Material: %s  (tt=%s, %s)\nDir: %s%s"
+          % (m["name"], m["tt"], m["desc"], m["path"], extra))
+    for s in m["steps"]:
+        j = s.get("job")
+        job_txt = ""
+        if j:
+            job_txt = "  job=%s %s %s" % (j["id"], j["state"],
+                                           ("@" + j["info"]) if j["state"] == "R" else j["info"])
+        active = "  <== active" if m["active"] is s else ""
+        print("  [%-9s] %-18s %-10s %s%s%s" % (
+            s["label"], s["name"], s["label_txt"], s["diag"], job_txt, active))
+    print("Action: %s" % m["action"])
+
+
+# ---------------------------------------------------------------------------
+# 材料 / 步骤定位（跨类型）
+# ---------------------------------------------------------------------------
+def find_material(data, name):
+    """-p 解析：精确名 > basename > 子串；跨类型命中多个时提示补 -tt。"""
+    for mode in ("exact", "base", "sub"):
+        hits = []
+        for t in data["types"]:
+            for m in t["materials"]:
+                if mode == "exact" and m["name"] == name:
+                    hits.append((t, m))
+                elif mode == "base" and os.path.basename(m["name"]) == name:
+                    hits.append((t, m))
+                elif mode == "sub" and name in m["name"]:
+                    hits.append((t, m))
+        if hits:
+            break
+    if not hits:
+        sys.exit("错误：找不到材料 '%s'。" % name)
+    tts = {t["key"] for t, _ in hits}
+    if len(hits) > 1:
+        if len(tts) > 1:
+            sys.exit("错误：'%s' 同时属于多个任务类型（%s），请用 -tt 指定。"
+                     % (name, "/".join(sorted(tts))))
+        sys.exit("错误：'%s' 匹配到多个材料：%s，请写完整名。"
+                 % (name, ", ".join(m["name"] for _, m in hits)))
+    return hits[0]
+
+
+def _step_seq_match(s, n):
+    """v1.7：数字 = 逻辑步骤号（stepN 前缀，band_plot 除外）。
+    三段式弛豫时 1 指首段 step1a（b/c 段用 label 指，如 S1b_cell）。"""
+    nm = str(s.get("name", ""))
+    return nm.startswith("step%d" % n) and "band_plot" not in nm
+
+
+def find_step(m, jname):
+    steps = m["steps"]
+    if jname.isdigit():
+        for s in steps:
+            if _step_seq_match(s, int(jname)):
+                return s
+        sys.exit("错误：没有序号 %s 对应的步骤（现有：%s）。"
+                 % (jname, ", ".join("%s|%s" % (s["label"], s["name"])
+                                     for s in steps)))
+    for s in steps:
+        if s["name"] == jname or s["label"] == jname:
+            return s
+    sys.exit("错误：%s 没有步骤 '%s'（现有：%s）。"
+             % (m["name"], jname,
+                ", ".join("%s|%s" % (s["label"], s["name"]) for s in steps)))
+
+
+# ---------------------------------------------------------------------------
+# 基础动作
+# ---------------------------------------------------------------------------
+def find_asset(cfg, t, m, fname):
+    """v3 资源查找链：材料/<技能>/逻辑名（v1.6 最优先）→ project_setting/逻辑名
+    → project_setting/映射名 → skill_dir/逻辑名 → skill_dir/映射名。
+    命中返回本地路径，否则 None。
+    映射来自 hpc.yaml 的 template_map（如 submit_std.tpl → submit_jzzn_vaspstd.tpl），
+    目标文件名始终是逻辑名；换超算改 project_setting/hpc.yaml，
+    单个技能单独换超算放 <技能>/hpc.yaml（v1.6）。"""
+    cands = []
+    ps = (m.get("ps") or {}).get("dir")
+    real = (m.get("template_map") or {}).get(fname)
+    sld = m.get("_skill_dir_local")
+    if sld:   # v1.6：技能子目录私有模板/依赖最优先（按技能定制）
+        cands.append(os.path.join(sld, fname))
+        if real:
+            cands.append(os.path.join(sld, real))
+    if ps:
+        cands.append(os.path.join(ps, fname))
+        if real:
+            cands.append(os.path.join(ps, real))
+    seg = (m.get("_seg") or {})
+    sd = seg.get("skill_dir") or t.get("skill_dir")
+    sdirs = []
+    if sd:
+        if os.path.isabs(sd):
+            sdirs = [sd]
+        else:  # 相对路径查找顺序：项目配置目录 → 全局配置目录 → 软件根目录
+            pkg_root = os.path.normpath(os.path.join(   # （tf.yaml 放 setting/ 时
+                os.path.dirname(os.path.realpath(__file__)), "..", ".."))  # 也能找对）
+            for base in (seg.get("_base_dir") or t.get("_base_dir"),
+                         cfg.get("_config_dir"), pkg_root):
+                if base:
+                    d = os.path.normpath(os.path.join(base, sd))
+                    if d not in sdirs:
+                        sdirs.append(d)
+    for base in sdirs:
+        cands.append(os.path.join(base, fname))
+        if real:
+            cands.append(os.path.join(base, real))
+    for c in cands:
+        if os.path.isfile(c):
+            return c
+    return None
+
+
+def remote_scancel(cfg, jobids, host="__default__"):
+    if not jobids:
+        return True, ""
+    rc, out = run_remote(cfg, "scancel " + " ".join(jobids), host=host)
+    return rc == 0, out
+
+
+def remote_gen(cfg, t, m, sname):
+    """执行 gen：先建目录、补 POSCAR（v3 本地模式）和 gen_need 依赖文件、gen 脚本，
+    再运行。文件来源：find_asset 查找链（project_setting > skill_dir，支持
+    template_map 映射，本地 base64 经 ssh 推送，超算无需存放）> gen_dir
+    （远端目录，超算上 cp）。材料目录已有的文件不覆盖。"""
+    sc = step_cfg(t, sname, m)
+    gen = sc.get("gen")
+    if not gen:
+        return False, "任务类型 %s 的步骤 %s 没有配置 gen" % (t["key"], sname)
+    gen = gen.format(mat=m["name"], matdir=m["path"], root=t["root"],
+                     step=sname, tt=t["key"])
+    seg = (m.get("_seg") or {})
+    gd = seg.get("gen_dir") or t.get("gen_dir")
+    host = m.get("host_eff") or "__default__"
+    # gen 允许带参数，例如 "gen_step1_PBE_opt.py --stage a"：
+    # 前面是脚本名（用于查找/推送），后面原样作为命令行参数传下去。
+    _m_py = re.match(r"^(\S+\.py)(\s.*)?$", gen)
+    is_py = bool(_m_py)
+    gen_script = _m_py.group(1) if _m_py else gen
+    gen_args = (_m_py.group(2) or "").strip() if _m_py else ""
+    if "gen_need" in sc:   # v1.0：步骤声明 gen_need 则完全替代类型级依赖
+        need = list(sc.get("gen_need") or [])       # （画图步不需要 dim_common 等）
+    else:
+        need = (list(seg.get("gen_need") or t.get("gen_need") or [])
+                + list(seg.get("aux_files") or t.get("aux_files") or []))
+        # v1.4：template_map 的逻辑名（submit_std_*.tpl 等）始终纳入推送清单。
+        # gen 脚本在远端按逻辑名找模板；gen_need 漏写时老材料靠远端残留文件
+        # 掩盖，新材料（空目录）就报"找不到模板"——这里兜底，不依赖清单完整。
+        for lg in (m.get("template_map") or {}):
+            if lg not in need:
+                need.append(lg)
+    line = "mkdir -p %s && cd %s && " % (shlex.quote(m["path"]),
+                                         shlex.quote(m["path"]))
+    if is_py:  # gen 脚本以 skill 为唯一样板：总是覆盖推送（本地改了立即生效）
+        gsrc = find_asset(cfg, t, m, gen_script)
+        if gsrc:
+            with open(gsrc, "rb") as fh:
+                gb64 = base64.b64encode(fh.read()).decode()
+            line += "echo %s | base64 -d > %s ; " % (gb64, shlex.quote(gen_script))
+        else:
+            need = need + [gen_script]  # 本地找不到 → gen_dir 远端兜底
+    lp = m.get("lpath")
+    if lp:  # v3：POSCAR 以本地项目目录为准，远端缺则推送
+        pos = os.path.join(lp, "POSCAR")
+        if os.path.isfile(pos):
+            with open(pos, "rb") as fh:
+                b64 = base64.b64encode(fh.read()).decode()
+            line += "[ -f POSCAR ] || echo %s | base64 -d > POSCAR ; " % b64
+    for f in need:
+        local_src = find_asset(cfg, t, m, f)
+        if local_src:
+            with open(local_src, "rb") as fh:
+                data = fh.read()
+            b64 = base64.b64encode(data).decode()
+            # v1.3.1：依赖文件 md5 比对、不同才覆盖——此前"存在即不推"，
+            # 本地 skill 库更新（如 dim_common 加函数）后远端旧版残留，
+            # 与新 gen 脚本混用直接 ImportError
+            lmd5 = hashlib.md5(data).hexdigest()
+            line += ("[ -f %s ] && [ \"$(md5sum %s 2>/dev/null | "
+                     "cut -d' ' -f1)\" = %s ] || echo %s | base64 -d > %s ; "
+                     % (shlex.quote(f), shlex.quote(f), lmd5,
+                        b64, shlex.quote(f)))
+        elif gd:
+            line += ("[ -f %s ] || { [ -f %s ] && cp %s . || "
+                     "{ echo 'ERROR: gen_dir 里缺少 %s' >&2; exit 1; }; }; "
+                     % (shlex.quote(f), shlex.quote(os.path.join(t["root"], gd, f)),
+                        shlex.quote(os.path.join(t["root"], gd, f)), f))
+        else:
+            return False, ("project_setting/skill_dir 里缺少 %s，"
+                           "且未配置 gen_dir 兜底" % f)
+    if is_py:
+        line += "python %s%s" % (shlex.quote(gen_script),
+                                 (" " + gen_args) if gen_args else "")
+        rc, out = run_remote(cfg, line, host=host, use_stdin=True)
+    else:
+        rc, out = run_remote(cfg, line + sh_b64(gen), host=host, use_stdin=True)
+    return rc == 0, out
+
+
+def remote_sbatch(cfg, s, jobname=None):
+    cands = [s["submit"]] + [c for c in
+                             ("submit.sh", "sub.sh", "job.sh", "run.sh", "sub.slurm")
+                             if c != s["submit"]]
+    loop = ("f=''; for c in %s; do [ -f \"$c\" ] && f=\"$c\" && break; done; "
+            % " ".join(cands))
+    loop += ("[ -z \"$f\" ] && f=$(ls *.sub *.slurm 2>/dev/null | head -1); "
+             "[ -z \"$f\" ] && { echo 'ERROR: 步骤目录里找不到提交脚本' >&2; exit 1; }; ")
+    if jobname:
+        jn = re.sub(r"[^A-Za-z0-9_.-]", "_", str(jobname))
+        loop += ("sed -i -e 's/^#SBATCH[[:space:]]\\+--job-name=.*/#SBATCH --job-name=%s/' "
+                 "-e 's/^#SBATCH[[:space:]]\\+-J[[:space:]].*/#SBATCH --job-name=%s/' \"$f\"; "
+                 "grep -q '^#SBATCH --job-name=%s' \"$f\" || "
+                 "sed -i '0,/^#SBATCH/s//#SBATCH --job-name=%s\\n&/' \"$f\"; " % (jn, jn, jn, jn))
+    loop += "sbatch \"$f\""
+    rc, out = run_remote(cfg, "cd %s && %s" % (shlex.quote(s["dir"]), loop),
+                         host=s.get("_host") or "__default__")
+    jid = None
+    m = re.search(r"Submitted batch job\s+(\d+)", out or "")
+    if m:
+        jid = m.group(1)
+    return rc == 0 and jid is not None, out, jid
+
+
+def kill_if_queued(cfg, s, force, tag):
+    j = s.get("job")
+    if not j:
+        return True
+    if not force:
+        print("%s: 已有作业 %s(%s)，先 stop 或加 -f。" % (tag, j["id"], j["state"]))
+        return False
+    ok, out = remote_scancel(cfg, [j["id"]], host=s.get("_host") or "__default__")
+    print("%s: scancel %s %s" % (tag, j["id"], "成功" if ok else ("失败: " + out)))
+    return ok
+
+
+def do_run_gen_step(cfg, t, m, s, tag):
+    """run: gen 的步骤（v3.21 能带画图等）：只在材料目录远端执行 gen 脚本，
+    不提交 SLURM；完成后按 done_marker 复判。失败（目录残留无产出）下次
+    状态显示 error，retry/rerun 可重来。"""
+    if s.get("job") and not kill_if_queued(cfg, s, True, tag):
+        return False
+    ok, out = remote_gen(cfg, t, m, s["name"])
+    if not ok:
+        print("%s: 运行失败。%s" % (tag, out))
+        return False
+    marker = step_cfg(t, s["name"], m).get("done_marker") or "band_summary.json"
+    rc, o = run_remote(cfg, "test -f %s && echo MARKER_OK"
+                       % shlex.quote(os.path.join(s["dir"], marker)),
+                       host=s.get("_host") or "__default__")
+    if rc == 0 and "MARKER_OK" in (o or ""):
+        print("%s: 已生成 %s（%s）" % (tag, s["dir"], marker))
+        log_action(m, "plot %s（生成 %s）" % (s["label"], s["dir"]))
+        _fetch_stamp_clear(m, s["name"])   # v1.11：产物已更新，让 auto-fetch 重拉
+        _scancel_clear(m, s["name"])       # v1.4：重跑成功，清 stop 标记
+        return True
+    tail = (out or "").strip().splitlines()
+    print("%s: 脚本运行了但没产出 %s%s（状态将显示 error，检查日志后 retry）"
+          % (tag, marker, ("：" + tail[-1]) if tail else ""))
+    return False
+
+
+def do_submit(cfg, t, m, s, force, gen_first, contcar_cp, tag):
+    """返回 True=成功 / False=失败或被拒绝（供退出码统计）。"""
+    if step_cfg(t, s["name"], m).get("run") == "gen":  # v3.21：画图等轻量步骤
+        return do_run_gen_step(cfg, t, m, s, tag)
+    if not kill_if_queued(cfg, s, force, tag):
+        return False
+    if gen_first or not s["has_incar"]:
+        ok, out = remote_gen(cfg, t, m, s["name"])
+        if not ok:
+            print("%s: gen 失败。%s" % (tag, out))
+            return False
+        print("%s: gen 完成。%s" % (tag, out.strip().splitlines()[-1] if out.strip() else ""))
+    if contcar_cp:
+        run_remote(cfg, "cd %s && [ -f CONTCAR ] && cp CONTCAR POSCAR || true"
+                   % shlex.quote(s["dir"]))
+    jobname = "%s-%s-%s" % (m["name"].split("/")[-1], m["tt"], s["label"])
+    ok, out, jid = remote_sbatch(cfg, s, jobname=jobname)
+    print("%s: %s" % (tag, ("已提交 %s (jobid=%s)" % (jobname, jid)) if ok
+                            else ("提交失败。" + out)))
+    if ok:
+        log_action(m, "%s jobid=%s" % (tag.split(" ", 1)[0] + " " + s["label"], jid))
+        _fetch_stamp_clear(m, s["name"])   # v1.11：重交后结果会更新，清戳记重拉
+        _scancel_clear(m, s["name"])       # v1.4：重交成功，清 stop 标记
+    return ok
+
+
+def do_rerun_step(cfg, t, m, s, yes, tag):
+    if s.get("job"):
+        if not kill_if_queued(cfg, s, True, tag):
+            return False
+    if s["exists"]:
+        if not yes:
+            ans = input("删除 %s 并重新生成？ [y/N] " % s["dir"]).strip().lower()
+            if ans not in ("y", "yes"):
+                print("%s: 已跳过。" % tag)
+                return False
+        rc, out = run_remote(cfg, "rm -rf -- " + shlex.quote(s["dir"]),
+                             host=s.get("_host") or "__default__")
+        if rc != 0:
+            print("%s: 删除失败。%s" % (tag, out))
+            return False
+        print("%s: 已删除 %s" % (tag, s["dir"]))
+        log_action(m, "rerun %s（删除 %s）" % (s["label"], s["dir"]))
+    s2 = dict(s)
+    s2["has_incar"] = False
+    s2["job"] = None
+    return do_submit(cfg, t, m, s2, force=False, gen_first=True, contcar_cp=False,
+                     tag=tag)
+
+
+def tag_of(m, s):
+    return "%s[%s|%s]" % (m["name"], m["tt"], s["label"])
+
+
+# ---------------------------------------------------------------------------
+# 命令
+# ---------------------------------------------------------------------------
+def find_uninited(cfg):
+    """project_roots 下有 POSCAR 但向上找不到 project_setting/tf_*.yaml 的材料目录
+    （= 新加进来还没 init 的材料）。
+    v1.2 之前只扫已有段的 local_root：新建体系（如 Mg2C60 直接放项目根下）
+    不在任何段覆盖范围内，永远扫不到；改为直接扫 project_roots。"""
+    import glob as _glob
+    out, seen = [], set()
+    for proot in (cfg.get("project_roots") or []):
+        try:
+            root, mats = discover_local(proot)
+        except Exception:
+            continue
+        for m in mats:
+            lp = os.path.realpath(m["lpath"])
+            if lp in seen:
+                continue
+            seen.add(lp)
+            ps = find_ps_dir(lp, root)
+            if ps and _glob.glob(os.path.join(ps, "tf_*.yaml")):
+                continue
+            out.append(m["name"])
+    return out
+
+
+def _mat_all_done(m):
+    return bool(m["steps"]) and all(s["kind"] == "OK" for s in m["steps"])
+
+
+def apply_hide_done(data):
+    """v1.1 --hide-done / hide_done: true：状态表隐藏全部步骤都完成的项目。"""
+    n = 0
+    for t in data["types"]:
+        keep = []
+        for m in t["materials"]:
+            if _mat_all_done(m):
+                n += 1
+            else:
+                keep.append(m)
+        t["materials"] = keep
+    if n:
+        print("（已隐藏 %d 个全部完成的项目；加 --show-done 显示）" % n)
+
+
+def cmd_status(cfg, data, mname, jname):
+    if mname:
+        t, m = find_material(data, mname)
+        render_detail(m)
+    else:
+        render_table(data)
+
+
+def guard_predecessors(m, s, force):
+    """-j 指定的步骤若前序未完成，需 -f 确认才继续。返回 True=可继续。"""
+    if force:
+        return True
+    idx = m["steps"].index(s)
+    bad = [x for x in m["steps"][:idx] if x["kind"] != "OK"]
+    if bad:
+        print("%s: 前序步骤 %s 未完成（%s），gen 依赖上一步产物，不能直接生成；"
+              "请先完成前序（或确认输入已手动就绪后加 -f 强制）。"
+              % (m["name"], "/".join(x["label"] for x in bad), bad[0]["label_txt"]))
+        return False
+    return True
+
+
+def cmd_start(cfg, data, mname, jname, force, incl_scancel=False):
+    """返回失败次数（含被拒绝的操作）。
+    incl_scancel：-status scancel 显式筛选过时，SCANCEL 步骤也可被 start
+    （否则批量 start 一律跳过被 stop 标记的步骤——v1.4"不会自动重跑"）。"""
+    fails = 0
+    if jname and not mname:  # v3.11：对全部材料只 start 指定步骤
+        for t, m, s in step_targets(data, jname):
+            if s["kind"] == "OK" or s.get("job"):
+                continue
+            if s["kind"] == "SCANCEL" and not incl_scancel:
+                print("跳过 %s[%s|%s]：scancel 标记（-status scancel start 可重跑）。"
+                      % (m["name"], m["tt"], s["label"]))
+                continue
+            if not guard_predecessors(m, s, force):
+                continue
+            if s["kind"] == "FAIL" and not force:
+                print("%s[%s|%s]: FAIL 状态，建议 retry/rerun（start 需 -f）。"
+                      % (m["name"], m["tt"], s["label"]))
+                continue
+            if not do_submit(cfg, t, m, s, force, gen_first=False,
+                             contcar_cp=step_cfg(t, s["name"], m).get(
+                                 "contcar_to_poscar", False),
+                             tag="start " + tag_of(m, s)):
+                fails += 1
+        return fails
+    if mname:
+        t, m = find_material(data, mname)
+        s = find_step(m, jname) if jname else m["active"]
+        if jname and not guard_predecessors(m, s, force):
+            return 1
+        if s is None:
+            print("%s: 工作流已全部完成（或可用 -j 指定步骤重新开始）。" % m["name"])
+            return 0
+        if s["kind"] == "FAIL" and not force:
+            print("%s: 步骤 %s 处于 FAIL，建议用 retry（保留文件）或 rerun（推倒重来）；"
+                  "确定要 start 请加 -f。" % (m["name"], s["label"]))
+            return 1
+        ok = do_submit(cfg, t, m, s, force, gen_first=False,
+                       contcar_cp=step_cfg(t, s["name"], m).get("contcar_to_poscar", False),
+                       tag="start " + tag_of(m, s))
+        return 0 if ok else 1
+    for t in data["types"]:
+        for m in t["materials"]:
+            s = m["active"]
+            if s is None or s["kind"] in ("R", "PD", "OTHER"):
+                continue
+            if s["kind"] == "FAIL":
+                print("NEEDS_RETRY: %s [%s|%s] %s（确认后用 tf -tt %s -p '%s' retry）"
+                      % (m["name"], m["tt"], s["label"], s["diag"], m["tt"], m["name"]))
+                continue
+            if s["kind"] == "SCANCEL" and not incl_scancel:
+                print("SCANCEL: %s [%s|%s] 曾被 tf stop 取消，不会自动重跑"
+                      "（重跑：tf -tt %s -p '%s' start，或 -status scancel start）"
+                      % (m["name"], m["tt"], s["label"], m["tt"], m["name"]))
+                continue
+            ok = do_submit(cfg, t, m, s, force, gen_first=False,
+                           contcar_cp=step_cfg(t, s["name"], m).get("contcar_to_poscar", False),
+                           tag="start " + tag_of(m, s))
+            if not ok:
+                fails += 1
+    return fails
+
+
+def cmd_stop(cfg, data, mname, jname, yes):
+    if jname and not mname:  # v3.11：取消全部材料的指定步骤作业
+        jobs = [(s["job"], m, s) for _, m, s in step_targets(data, jname)
+                if s.get("job")]
+        if not jobs:
+            print("该步骤没有排队/运行的作业。")
+            return 0
+        desc = ", ".join("%s(%s,%s)" % (j["id"], m["name"], j["state"])
+                         for j, m, s in jobs)
+        if not yes:
+            ans = input("取消全部材料的步骤 %s 的作业：%s ? [y/N] "
+                        % (jobs[0][2]["label"], desc)).strip().lower()
+            if ans not in ("y", "yes"):
+                print("已取消操作。")
+                return 1
+        by_host = {}
+        for j, m, s in jobs:
+            by_host.setdefault(m.get("host_eff") or "__default__",
+                               []).append((j, m, s))
+        ok_all = True
+        for h, trio in by_host.items():
+            ids = [j["id"] for j, m, s in trio]
+            ok, out = remote_scancel(cfg, ids, host=h)
+            ok_all = ok_all and ok
+            print("scancel %s %s" % (" ".join(ids), "成功" if ok else ("失败: " + out)))
+            if ok:   # v1.4：打 scancel 标记，auto_advance 不再自动重跑
+                for j, m, s in trio:
+                    _scancel_set(m, s["name"], j["id"])
+                    log_action(m, "stop %s" % j["id"])
+        if ok_all:
+            print("已打 scancel 标记（不会自动重跑）；重跑："
+                  "tf -status scancel start（保留文件）或 rerun（推倒重来）")
+        return 0 if ok_all else 1
+    if mname:
+        t, m = find_material(data, mname)
+        steps = [find_step(m, jname)] if jname else m["steps"]
+        jobs = [(s["job"], s) for s in steps if s.get("job")]
+        if not jobs:
+            print("%s: 没有排队/运行的作业。" % m["name"])
+            return 0
+        desc = ", ".join("%s(%s,%s)" % (j["id"], j["state"], s["label"]) for j, s in jobs)
+        if not yes:
+            ans = input("取消 %s(tt=%s) 的作业 %s ? [y/N] "
+                        % (m["name"], m["tt"], desc)).strip().lower()
+            if ans not in ("y", "yes"):
+                print("已取消操作。")
+                return 1
+        ok, out = remote_scancel(cfg, [j["id"] for j, _ in jobs],
+                                 host=m.get("host_eff") or "__default__")
+        print("%s: scancel %s %s" % (m["name"], " ".join(j["id"] for j, _ in jobs),
+                                     "成功" if ok else ("失败: " + out)))
+        if ok:   # v1.4：打 scancel 标记，auto_advance 不再自动重跑
+            for j, s in jobs:
+                _scancel_set(m, s["name"], j["id"])
+            log_action(m, "stop %s" % " ".join(j["id"] for j, _ in jobs))
+            print("%s: 已打 scancel 标记（不会自动重跑）；重跑："
+                  "tf -tt %s -p '%s' start（保留文件）或 rerun（推倒重来）"
+                  % (m["name"], m["tt"], m["name"]))
+        return 0 if ok else 1
+    jobs = [(s["job"], m, s) for t in data["types"] for m in t["materials"]
+            for s in m["steps"] if s.get("job")]
+    if not jobs:
+        print("没有任何排队/运行的作业。")
+        return 0
+    desc = ", ".join("%s(%s|%s,%s)" % (j["id"], m["name"], m["tt"], s["label"])
+                     for j, m, s in jobs)
+    if not yes:
+        ans = input("取消全部 %d 个作业：%s ? [y/N] " % (len(jobs), desc)).strip().lower()
+        if ans not in ("y", "yes"):
+            print("已取消操作。")
+            return 1
+    by_host = {}
+    for j, m, s in jobs:
+        by_host.setdefault(m.get("host_eff") or "__default__", []).append((j, m, s))
+    ok_all = True
+    for h, trio in by_host.items():
+        ids = [j["id"] for j, m, s in trio]
+        ok, out = remote_scancel(cfg, ids, host=h)
+        ok_all = ok_all and ok
+        print("scancel %s %s" % (" ".join(ids), "成功" if ok else ("失败: " + out)))
+        if ok:   # v1.4：打 scancel 标记，auto_advance 不再自动重跑
+            for j, m, s in trio:
+                _scancel_set(m, s["name"], j["id"])
+                log_action(m, "stop %s" % j["id"])
+    if ok_all:
+        print("已打 scancel 标记（不会自动重跑）；重跑："
+              "tf -status scancel start（保留文件）或 rerun（推倒重来）")
+    return 0 if ok_all else 1
+
+
+def cmd_retry(cfg, data, mname, jname, force, incl_scancel=False):
+    """incl_scancel：-status scancel 显式筛选过时，SCANCEL 步骤也可 retry
+    （v1.4；默认批量 retry 只动 FAIL，不碰 scancel 标记的步骤）。"""
+    fails = 0
+
+    def _retryable(s):
+        return s["kind"] == "FAIL" or (incl_scancel and s["kind"] == "SCANCEL")
+
+    if jname and not mname:  # v3.11：重交全部材料的指定 FAIL 步骤
+        for t, m, s in step_targets(data, jname):
+            if not _retryable(s) or s.get("job"):
+                continue
+            if not guard_predecessors(m, s, force):
+                continue
+            if not do_submit(cfg, t, m, s, force, gen_first=False,
+                             contcar_cp=step_cfg(t, s["name"], m).get(
+                                 "contcar_to_poscar", False),
+                             tag="retry " + tag_of(m, s)):
+                fails += 1
+        return fails
+    if mname:
+        t, m = find_material(data, mname)
+        s = find_step(m, jname) if jname else m["active"]
+        if jname and not guard_predecessors(m, s, force):
+            return 1
+        if s is None:
+            print("%s: 已全部完成。" % m["name"])
+            return 0
+        if not s["has_incar"]:
+            print("%s: 步骤 %s 没有输入文件，请用 start（生成）或 rerun（推倒重来）。"
+                  % (m["name"], s["label"]))
+            return 1
+        ok = do_submit(cfg, t, m, s, force, gen_first=False,
+                       contcar_cp=step_cfg(t, s["name"], m).get("contcar_to_poscar", False),
+                       tag="retry " + tag_of(m, s))
+        return 0 if ok else 1
+    for t in data["types"]:
+        for m in t["materials"]:
+            s = m["active"]
+            if s is None or not _retryable(s):
+                continue
+            ok = do_submit(cfg, t, m, s, force, gen_first=False,
+                           contcar_cp=step_cfg(t, s["name"], m).get("contcar_to_poscar", False),
+                           tag="retry " + tag_of(m, s))
+            if not ok:
+                fails += 1
+    return fails
+
+
+def find_step_soft(m, jname):
+    """find_step 的宽容版：材料没有该步骤时返回 None 而不是退出。"""
+    steps = m["steps"]
+    if jname.isdigit():
+        for s in steps:
+            if _step_seq_match(s, int(jname)):
+                return s
+        return None
+    for s in steps:
+        if s["name"] == jname or s["label"] == jname:
+            return s
+    return None
+
+
+def step_targets(data, jname):
+    """跨材料定位同一步骤：返回 [(t, m, s)]，无此步骤的材料跳过。"""
+    out = []
+    for t in data["types"]:
+        for m in t["materials"]:
+            s = find_step_soft(m, jname)
+            if s is not None:
+                out.append((t, m, s))
+    if not out:
+        sys.exit("错误：没有任何材料有步骤 '%s'。" % jname)
+    return out
+
+
+def cmd_rerun(cfg, data, mname, jname, yes, force=False):
+    fails = 0
+    if jname and not mname:  # v3.11：跨材料只 rerun 指定步骤
+        tgts = step_targets(data, jname)
+        todo, skip = [], []
+        for t, m, s in tgts:
+            if s["kind"] == "OK":
+                skip.append("%s[%s] 已完成" % (m["name"], s["label"]))
+                continue
+            if not guard_predecessors(m, s, force):
+                skip.append("%s[%s] 前序未完成" % (m["name"], s["label"]))
+                continue
+            todo.append((t, m, s))
+        for msg in skip:
+            print("跳过 %s" % msg)
+        if not todo:
+            print("没有可 rerun 的目标。")
+            return 0
+        if not yes:
+            ans = input("rerun 全部材料的步骤 %s（%d 个目标：删除并重新生成提交）？ [y/N] "
+                        % (todo[0][2]["label"], len(todo))).strip().lower()
+            if ans not in ("y", "yes"):
+                print("已取消操作。")
+                return 1
+        for t, m, s in todo:
+            if not do_rerun_step(cfg, t, m, s, True, tag="rerun " + tag_of(m, s)):
+                fails += 1
+        return fails
+    if not mname:
+        mats = [(t, m) for t in data["types"] for m in t["materials"]]
+        if not yes:
+            ans = input("rerun 全部 %d 个材料（删除所有步骤目录并重新生成）？ [y/N] "
+                        % len(mats)).strip().lower()
+            if ans not in ("y", "yes"):
+                print("已取消操作。")
+                return 1
+        for t, m in mats:
+            if not rerun_project(cfg, t, m, yes=True):
+                fails += 1
+        return fails
+    t, m = find_material(data, mname)
+    if jname:
+        s = find_step(m, jname)
+        if not guard_predecessors(m, s, force=False):
+            print("（rerun 会删除并重新生成，前序缺失时 gen 必然失败；"
+                  "如确已手动备好前序产物，请用 start -f 或先处理前序。）")
+            return 1
+        ok = do_rerun_step(cfg, t, m, s, yes, tag="rerun " + tag_of(m, s))
+        return 0 if ok else 1
+    return 0 if rerun_project(cfg, t, m, yes) else 1
+
+
+def rerun_project(cfg, t, m, yes):
+    dirs = [s["dir"] for s in m["steps"] if s["exists"]]
+    jobs = [s["job"] for s in m["steps"] if s.get("job")]
+    if not yes:
+        ans = input("删除 %s(tt=%s) 的 %d 个步骤目录并从头重新生成？ [y/N] "
+                    % (m["name"], m["tt"], len(dirs))).strip().lower()
+        if ans not in ("y", "yes"):
+            print("%s: 已跳过。" % m["name"])
+            return False
+    host = m.get("host_eff") or "__default__"
+    if jobs:
+        remote_scancel(cfg, [j["id"] for j in jobs], host=host)
+        print("%s: scancel %s" % (m["name"], " ".join(j["id"] for j in jobs)))
+    if dirs:
+        rc, out = run_remote(cfg, "rm -rf -- " + " ".join(shlex.quote(d) for d in dirs),
+                             host=host)
+        if rc != 0:
+            print("%s: 删除失败。%s" % (m["name"], out))
+            return False
+        print("%s: 已删除 %d 个步骤目录" % (m["name"], len(dirs)))
+    log_action(m, "rerun project（%d 个步骤目录）" % len(dirs))
+    _scancel_clear(m)   # v1.4：整材料推倒重来，清掉全部 stop 标记
+    if not m["steps"]:
+        print("%s: 该类型没有配置步骤。" % m["name"])
+        return False
+    first = m["steps"][0]
+    s0 = dict(first)
+    s0["has_incar"] = False
+    s0["job"] = None
+    return do_submit(cfg, t, m, s0, force=False, gen_first=True, contcar_cp=False,
+                     tag="rerun " + tag_of(m, first))
+
+
+def auto_advance(cfg, data):
+    """status 时自动推进可开始的步骤（全局 tf.yaml 写 auto_advance: true 开启；
+    项目 setting.yaml 里 auto_advance: false 可单独关闭）。
+    只推进 TODO/PREP（输入就绪/未生成）的活跃步骤；error 不自动重试；
+    v1.4：SCANCEL（tf stop 打了标记的）同样不推进，须显式 start/retry/rerun。"""
+    if not cfg.get("auto_advance"):
+        return
+    for t in data["types"]:
+        for m in t["materials"]:
+            st = (m.get("ps") or {}).get("setting") or {}
+            if st.get("auto_advance") is False:
+                continue
+            s = m.get("active")
+            if not s or s["kind"] not in ("TODO", "PREP"):
+                continue
+            sc = step_cfg(t, s["name"], m)
+            do_submit(cfg, t, m, s, False, True, sc.get("contcar_to_poscar"),
+                      "auto %s[%s|%s]" % (m["name"], m["tt"], s["label"]))
+
+
+def cmd_step_init(cfg, data, proj, job, force):
+    """tf -p MAT -j STEP init：只生成该步骤的输入文件（gen），不提交。
+    已有输入时不覆盖（要推倒重来用 rerun）；前序未完成需 -f。"""
+    if not proj or not job:
+        print("错误：步骤级 init 需要 -p 材料 和 -j 步骤。")
+        return 1
+    t, m = find_material(data, proj)
+    s = find_step(m, job)
+    tag = "init %s[%s|%s]" % (m["name"], m["tt"], s["label"])
+    if s["kind"] == "OK":
+        print("%s: 该步骤已完成，无需操作。" % tag)
+        return 0
+    if s.get("job"):
+        print("%s: 已有作业 %s(%s)，不可 init。" % (tag, s["job"]["id"],
+                                                   s["job"]["state"]))
+        return 1
+    if not guard_predecessors(m, s, force):
+        return 1
+    if s["has_incar"] and not force:
+        print("%s: 输入文件已存在（%s）。检查后直接 tf -p %s -j %s start 提交；"
+              "要推倒重生成用 rerun。" % (tag, s["dir"], proj, job))
+        return 0
+    sc = step_cfg(t, s["name"], m)
+    ok, out = remote_gen(cfg, t, m, s["name"])
+    if not ok:
+        print("%s: gen 失败。%s" % (tag, out))
+        return 1
+    print("%s: gen 完成。%s" % (tag, out.strip().splitlines()[-1] if out.strip() else ""))
+    if sc.get("contcar_to_poscar"):
+        run_remote(cfg, "cd %s && [ -f CONTCAR ] && cp CONTCAR POSCAR || true"
+                   % shlex.quote(s["dir"]), host=s.get("_host") or "__default__")
+    log_action(m, "init %s（只生成输入）" % s["label"])
+    print("%s: 输入就绪 → %s（检查后用 start 提交）" % (tag, s["dir"]))
+    return 0
+
+
+def cmd_clean(cfg, data, proj, job, yes):
+    """删除生成物，回到 PREP（材料级保留 POSCAR）。
+    无 -p      → 全部材料；-p 材料 → 该材料；-p 体系目录（如 C20）→ 其下所有材料；
+    -p -j      → 单个步骤目录；-j 不带 -p → 全部材料的该步骤目录。
+    关联作业一并 scancel。默认要确认，-y 跳过。"""
+    if job and not proj:  # v3.11：跨材料只 clean 指定步骤
+        tgts = [(m, s) for _, m, s in step_targets(data, job)
+                if s.get("exists") or s.get("job")]
+        if not tgts:
+            print("该步骤在所有材料下都无需清理。")
+            return 0
+        njob = sum(1 for _, s in tgts if s.get("job"))
+        if not yes:
+            ans = input("clean 全部材料的步骤 %s（%d 个目录%s）？ [y/N] "
+                        % (tgts[0][1]["label"], len(tgts),
+                           "，并取消 %d 个作业" % njob if njob else "")
+                        ).strip().lower()
+            if ans not in ("y", "yes"):
+                print("已取消操作。")
+                return 1
+        fails = 0
+        for m, s in tgts:
+            host = s.get("_host") or "__default__"
+            if s.get("job"):
+                remote_scancel(cfg, [s["job"]["id"]], host=host)
+                print("%s: scancel %s" % (m["name"], s["job"]["id"]))
+            if s.get("exists"):
+                rc, out = run_remote(cfg, "rm -rf -- " + shlex.quote(s["dir"]),
+                                     host=host)
+                if rc != 0:
+                    print("%s[%s]: 删除失败。%s" % (m["name"], s["label"], out))
+                    fails += 1
+                    continue
+                print("%s[%s]: 已删除 %s" % (m["name"], s["label"], s["dir"]))
+                log_action(m, "clean %s（删除 %s）" % (s["label"], s["dir"]))
+            _scancel_clear(m, s["name"])   # v1.4：目录已清，stop 标记一并失效
+        return fails
+    if proj and job:  # 步骤级
+        t, m = find_material(data, proj)
+        s = find_step(m, job)
+        if not s.get("exists") and not s.get("job"):
+            print("%s[%s]: 目录不存在且无作业，无需清理。" % (m["name"], s["label"]))
+            return 0
+        if not yes:
+            ans = input("clean %s[%s]（删除步骤目录%s）？ [y/N] "
+                        % (m["name"], s["label"],
+                           "，并取消作业 " + s["job"]["id"] if s.get("job") else "")
+                        ).strip().lower()
+            if ans not in ("y", "yes"):
+                print("已取消操作。")
+                return 1
+        if s.get("job"):
+            remote_scancel(cfg, [s["job"]["id"]],
+                           host=s.get("_host") or "__default__")
+            print("%s: scancel %s" % (m["name"], s["job"]["id"]))
+        if s.get("exists"):
+            rc, out = run_remote(cfg, "rm -rf -- " + shlex.quote(s["dir"]),
+                                 host=s.get("_host") or "__default__")
+            if rc != 0:
+                print("%s[%s]: 删除失败。%s" % (m["name"], s["label"], out))
+                return 1
+            print("%s[%s]: 已删除 %s" % (m["name"], s["label"], s["dir"]))
+            log_action(m, "clean %s（删除 %s）" % (s["label"], s["dir"]))
+        _scancel_clear(m, s["name"])   # v1.4
+        return 0
+
+    if proj:  # 体系目录优先（-p C20 → 其下所有材料），否则按材料解析
+        mats = [(t["key"], m) for t in data["types"] for m in t["materials"]
+                if "/" in m["name"] and m["name"].split("/")[0] == proj]
+        if not mats:
+            t, m = find_material(data, proj)
+            mats = [(t["key"], m)]
+    else:
+        mats = [(t["key"], m) for t in data["types"] for m in t["materials"]]
+    todo = [(k, m, [s["job"] for s in m["steps"] if s.get("job")])
+            for k, m in mats]
+    njob = sum(len(j) for _, _, j in todo)
+    if not yes:
+        ans = input("clean %d 个材料（删除全部生成物%s，"
+                    "只留 POSCAR%s）？ [y/N] "
+                    % (len(todo),
+                       "和材料级 project_setting" if len(data["types"]) > 1
+                       else "；配置里还有其他技能段时只移除本技能段",
+                       "，并取消 %d 个作业" % njob if njob else "")
+                    ).strip().lower()
+        if ans not in ("y", "yes"):
+            print("已取消操作。")
+            return 1
+    fails = 0
+    for key, m, jobs in todo:
+        host = m.get("host_eff") or "__default__"
+        if jobs:
+            remote_scancel(cfg, [j["id"] for j in jobs], host=host)
+            print("%s: scancel %s" % (m["name"], " ".join(j["id"] for j in jobs)))
+        if not m.get("path"):
+            continue
+        line = ("[ -d %s ] && find %s -mindepth 1 -maxdepth 1 ! -name POSCAR "
+                "-exec rm -rf -- {} + || true"
+                % (shlex.quote(m["path"]), shlex.quote(m["path"])))
+        rc, out = run_remote(cfg, line, host=host)
+        if rc != 0:
+            print("%s: 清理失败。%s" % (m["name"], out))
+            fails += 1
+            continue
+        for d in (m.get("log_dir"), m.get("result_dir")):  # 本地 log/result 一并删
+            if d and os.path.isdir(d):
+                shutil.rmtree(d, ignore_errors=True)
+        _scancel_clear(m)   # v1.4：材料回到全新状态，stop 标记一并清
+        # v1.6：材料自己的 project_setting 一并删除（材料回到全新未初始化状态，
+        # 重算需 tf init）；体系级共享配置（如 C20/project_setting）保留不动，
+        # 否则会误删兄弟材料的配置。
+        # v1.3.4：技能段感知——多技能项目的配置里还有其他技能的段时，只移除
+        # 本技能段、保留 project_setting；本技能是最后一个段才整目录删。
+        # 此前 tf -tt elastic clean 把整目录删掉，band 段跟着丢、band 瘫痪。
+        ps = (m.get("ps") or {}).get("dir")
+        lp = m.get("lpath")
+        own_ps = (ps and lp and os.path.isdir(ps) and os.path.dirname(
+            os.path.realpath(ps)) == os.path.realpath(lp))
+        kept_note = ""
+        if own_ps:
+            f0s = glob.glob(os.path.join(ps, "tf_*.yaml"))
+            remaining, removed = [], False
+            if f0s:
+                ex = (_load_yaml_file(f0s[0]).get("task_types") or {})
+                remaining = [k for k in ex if k != key]
+                if key in ex:
+                    removed = _yaml_type_block_remove(f0s[0], key)
+            if remaining and removed:
+                kept_note = "，已移除 %s 段、project_setting 保留（%s）" % (
+                    key, ", ".join(remaining))
+            else:
+                shutil.rmtree(ps, ignore_errors=True)   # log 已删，不写日志
+                kept_note = "，project_setting 已删，重算需 tf init"
+        else:
+            kept_note = "，体系级共享配置保留"
+        print("%s: 已清理（本地+超算只留 POSCAR%s）" % (m["name"], kept_note))
+    return fails
+
+
+FETCH_STAMP = ".tf_fetched"   # result_dir/<step>/ 下的"已抓取"戳记（v1.11）
+
+
+def _fetch_stamp_clear(m, step_name):
+    """步骤重提交/重生成后调用：清掉抓取戳记，让 auto-fetch 重拉新结果。"""
+    try:
+        sp = os.path.join(m.get("result_dir") or "", step_name, FETCH_STAMP)
+        if os.path.isfile(sp):
+            os.remove(sp)
+    except OSError:
+        pass
+
+
+def fetch_material(cfg, m, only_steps=None, quiet=False, all_files=False):
+    """把该材料各已存在步骤的 fetch_files 从超算拉回本地 result_dir/<step>/。
+    用 tar 管道流式传输，缺失文件自动跳过。only_steps = 只拉这些步骤名。"""
+    host = m.get("host_eff") or cfg.get("host")
+    files = m.get("fetch_files") or []
+    if not files:
+        if not quiet:
+            print("%s: fetch_files 为空，跳过。" % m["name"])
+        return True
+    nstep = 0
+    for s in m["steps"]:
+        if not s.get("exists"):
+            continue
+        if only_steps is not None and s["name"] not in only_steps:
+            continue
+        dest = os.path.join(m["result_dir"], s["name"])
+        os.makedirs(dest, exist_ok=True)
+        sc2 = next((x for x in ((m.get("_seg") or {}).get("steps_cfg") or [])
+                    if x.get("name") == s["name"]), {})
+        if sc2.get("fetch_all") or all_files:   # v3.21：画图步骤产物文件名不固定，整目录拉回；v1.1：fetch --all 整目录
+            remote = "cd %s && tar -cf - ." % shlex.quote(s["dir"])
+        else:
+            remote = ("cd %s && tar --ignore-failed-read -cf - %s"
+                      % (shlex.quote(s["dir"]),
+                         " ".join(shlex.quote(f) for f in files)))
+        cmd1 = (_ssh_cmd(cfg, host, [remote]) if host else ["bash", "-c", remote])
+        p1 = subprocess.Popen(cmd1, stdout=subprocess.PIPE,
+                              stderr=subprocess.DEVNULL)
+        p2 = subprocess.run(["tar", "xf", "-", "-C", dest], stdin=p1.stdout,
+                            capture_output=True, text=True)
+        p1.stdout.close()
+        rc1 = p1.wait()
+        if rc1 != 0 or p2.returncode != 0:
+            print("%s: fetch %s 失败。%s" % (m["name"], s["label"], p2.stderr))
+            return False
+        try:   # v1.11：抓取成功写戳记（auto-fetch 据此跳过，不再每次重拉）
+            open(os.path.join(dest, FETCH_STAMP), "w").close()
+        except OSError:
+            pass
+        nstep += 1
+    if nstep and not quiet:
+        print("%s: 已拉回 %d 个步骤 → %s" % (m["name"], nstep, m["result_dir"]))
+    if nstep:
+        log_action(m, "fetch %d 个步骤 → %s" % (nstep, m["result_dir"]))
+    return True
+
+
+def auto_fetch(cfg, data):
+    """status 时自动把"已完成但尚未拉回"的步骤结果保存到本地（本地模式；
+    项目 setting.yaml 里 auto_fetch: false 可关闭）。失败只警告不打断。"""
+    pending = []
+    for t in data["types"]:
+        for m in t["materials"]:
+            if not m.get("result_dir"):
+                continue
+            st = (m.get("ps") or {}).get("setting") or {}
+            if st.get("auto_fetch") is False:
+                continue
+            need = []
+            for s in m["steps"]:
+                if not s.get("done"):
+                    continue
+                dest = os.path.join(m["result_dir"], s["name"])
+                # v1.11：按戳记判"已抓取"。旧守卫（dest 非空）对跳过段失效——
+                # 它们远端没目录，永远拉不到文件，会每次都重试空拉
+                if os.path.isfile(os.path.join(dest, FETCH_STAMP)):
+                    continue
+                # v1.12：老版本已拉回过的（dest 非空）补写戳记直接跳过——否则
+                # 戳记制上线第一次会把全部历史结果（含巨大的 HSE OUTCAR、整目录
+                # 画图产物）重拉一遍，表现为长时间"卡死"
+                if os.path.isdir(dest) and os.listdir(dest):
+                    try:
+                        open(os.path.join(dest, FETCH_STAMP), "w").close()
+                    except OSError:
+                        pass
+                    continue
+                need.append(s["name"])
+            if not need:
+                continue
+            pending.append((m, need))
+    if not pending:
+        return
+    for m, need in pending:
+        print("auto-fetch %s: %s → %s" % (m["name"], ",".join(need),
+                                          m["result_dir"]))
+
+    def one(mn):
+        m, need = mn
+        try:
+            ok = fetch_material(cfg, m, only_steps=set(need), quiet=True)
+        except Exception as e:  # noqa: BLE001
+            ok = False
+            print("警告：auto-fetch %s 失败：%s" % (m["name"], e),
+                  file=sys.stderr)
+        if ok:  # 戳记补写：跳过段远端没目录，fetch 不会经手，这里统一补上
+            for nm in need:
+                try:
+                    d = os.path.join(m["result_dir"], nm)
+                    os.makedirs(d, exist_ok=True)
+                    open(os.path.join(d, FETCH_STAMP), "w").close()
+                except OSError:
+                    pass
+    if len(pending) == 1:
+        one(pending[0])
+    else:  # v3.17：多材料并行拉回（配合 ssh 连接复用，等待时间大幅缩短）
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=min(4, len(pending))) as ex:
+            list(ex.map(one, pending))
+
+
+def cmd_fetch(cfg, data, mname, all_files=False):
+    fails = 0
+    if mname:
+        t, m = find_material(data, mname)
+        mats = [m]
+    else:
+        mats = [m for t in data["types"] for m in t["materials"]]
+    for m in mats:
+        if not m.get("result_dir"):
+            print("%s: 非本地模式（无 result_dir），跳过 fetch。" % m["name"])
+            continue
+        if not fetch_material(cfg, m, all_files=all_files):
+            fails += 1
+    return fails
+
+
+def cmd_init(cfg, types, proj, name=None, tt=None):
+    """初始化项目配置。
+    -p 指定材料 → 只初始化其项目目录（名含 / 取上一级，如 C20/qHPC20 → C20/）；
+    不带 -p → 当前目录下所有项目批量初始化（cwd 下一层就是材料目录时，
+    cwd 本身作为一个项目）。位置参数可指定项目名（tf init 名字）。"""
+    if proj:
+        hit = None
+        # v1.0：材料定位与类型无关——-tt 过滤后 types 可能只剩骨架甚至为空
+        # （如给 band 项目追加 elastic 段），先按过滤列表找、找不到退回全量；
+        # 循环变量不得叫 tt（会覆盖参数，曾致 TypeError: unhashable 'dict'）
+        tries = [types]
+        if tt:
+            tries.append(get_types(cfg, tt=None))
+        for tlist in tries:
+            for t0 in tlist:
+                if not t0.get("local_root"):
+                    continue
+                _r, mats = discover_local(t0["local_root"])
+                for m in mats:
+                    if m["name"] == proj or os.path.basename(m["name"]) == proj:
+                        hit = m
+                        break
+                if hit:
+                    break
+            if hit:
+                break
+        if not hit:
+            print("错误：本地没有找到项目 %s（确认 local_root 下有带 POSCAR 的目录）。"
+                  % proj)
+            return 1
+        return _init_one(cfg, types, hit["lpath"], name, tt=tt)  # 材料级 project_setting
+    import glob as _glob
+    cwd = os.getcwd()
+    if os.path.isfile(os.path.join(cwd, "POSCAR")):
+        return _init_one(cfg, types, cwd, name, tt=tt)  # cwd 本身是材料目录
+    matdirs = sorted({os.path.dirname(p)
+                      for pat in ("*/POSCAR", "*/*/POSCAR", "*/*/*/POSCAR")
+                      for p in _glob.glob(os.path.join(cwd, pat))})
+    if not matdirs:
+        print("错误：当前目录下没有发现材料目录（含 POSCAR）。")
+        return 1
+    # v1.5：批量 init 只初始化 project_roots 覆盖范围内的目录——在家目录等
+    # 大范围目录下运行时，其他工作流的材料（不在 tf 管理内）跳过不误建。
+    roots = [os.path.realpath(os.path.expanduser(r))
+             for r in (cfg.get("project_roots") or [])]
+    def _managed(d):
+        rd = os.path.realpath(d)
+        return any(rd == r or rd.startswith(r + os.sep) for r in roots)
+    managed, skipped = [], []
+    for d in matdirs:
+        (managed if _managed(d) else skipped).append(d)
+    for d in skipped:
+        print("跳过 %s（不在 tf.yaml 的 project_roots 内；要纳入管理，"
+              "先把它的根目录加进 project_roots）" % os.path.relpath(d, cwd))
+    if not managed:
+        print("错误：发现的材料目录都不在 project_roots 内，未初始化任何项目。")
+        return 1
+    matdirs = managed
+    fails, done = 0, 0
+    # v1.2：带 -tt 时已初始化项目也要进 _init_one——由它把缺的技能段
+    # 追加进现有配置（批量挂新技能；types 为空说明该技能尚无段，更该追加）
+    appending = bool(tt)
+    for d in matdirs:
+        if _glob.glob(os.path.join(d, "project_setting", "tf_*.yaml")):
+            if not appending:
+                print("== %s == 已初始化，跳过" % os.path.relpath(d, cwd))
+                continue
+            print("== %s ==" % os.path.relpath(d, cwd))
+            fails += _init_one(cfg, types, d, None, tt=tt)   # 追加 -tt 技能段
+            continue
+        print("== %s ==" % os.path.relpath(d, cwd))
+        fails += _init_one(cfg, types, d, None, tt=tt)
+        done += 1
+    if not fails:
+        print("材料初始化就绪（新 %d 个）。tf 查看状态，tf start 全部开始。" % done)
+    return fails
+
+
+def _init_one(cfg, types, target, name=None, tt=None):
+    """在 target 目录生成 project_setting/（tf_<项目名>.yaml + setting.yaml +
+    hpc.yaml + 映射模板）。已存在的文件不覆盖；项目配置名全局唯一，重复即报错。"""
+    cands = [tt for tt in types if tt.get("local_root")]
+    t = next((tt for tt in cands if not tt.get("_from")), None)
+    tkey = (t or {}).get("key")
+    if t is None:  # 模板字段优先继承全局骨架（无 local_root 的主定义）
+        # v1.2：-tt 过滤后 types 只剩目标类型的段时，骨架也要锁定该类型
+        # （否则 tf -tt elastic init 会拿到排在前面的 band 骨架，追加错段）
+        want = {tt2.get("key") for tt2 in types} - {None}
+        # v1.3.2：types 为空（该技能还没有任何项目段）时 want 也空，
+        # 锁定会失效退回拿 band 骨架——用 -tt 的 key 兜底
+        if tt:
+            want = {tt}
+        for k, tc in (cfg.get("task_types") or {}).items():
+            if want and k not in want:
+                continue
+            if tc and not tc.get("local_root"):
+                t, tkey = dict(tc), k
+                break
+    if t is None and cands:
+        t = cands[0]
+        tkey = tkey or t.get("key")
+    ps = os.path.join(target, "project_setting")
+    os.makedirs(ps, exist_ok=True)
+    # 项目配置 tf_<项目名>.yaml（命名全局唯一，禁止重复）
+    pname = name or re.sub(r"\W+", "_", os.path.basename(os.path.abspath(target)))
+    f0 = os.path.join(ps, "tf_%s.yaml" % pname)
+    if os.path.exists(f0):
+        # v1.2：配置已存在且带了 -tt——缺该类型段就追加（已有项目挂新技能，
+        # 如 band 项目追加 elastic），不再只"跳过"。空段 = 字段全继承全局骨架。
+        existing = _load_yaml_file(f0)
+        if tkey and tkey not in (existing.get("task_types") or {}):
+            with open(f0, encoding="utf-8") as f:
+                lines = f.readlines()
+            tt_idx = next((i for i, l in enumerate(lines)
+                           if l.startswith("task_types:")), None)
+            if tt_idx is not None:
+                end = len(lines)
+                for i in range(tt_idx + 1, len(lines)):
+                    l = lines[i]
+                    if l.strip() and not l.startswith((" ", "\t", "#")):
+                        end = i
+                        break
+                lines.insert(end, "  %s:\n" % tkey)
+                with open(f0, "w", encoding="utf-8") as f:
+                    f.writelines(lines)
+                print("已追加 %s 段 → %s（字段全继承全局骨架，可按项目改）"
+                      % (tkey, f0))
+            else:
+                print("已存在，跳过 %s（未找到 task_types 块，请手工加 %s 段）"
+                      % (f0, tkey))
+        else:
+            print("已存在，跳过 %s" % f0)
+    else:
+        roots = cfg.get("project_roots") or [cfg.get("_config_dir")]
+        for n2, p2, _ in scan_project_configs(roots):
+            if n2 == pname:
+                print("错误：项目配置名 tf_%s.yaml 已被 %s 占用，"
+                      "请换个名字（tf init <名字>）。" % (pname, p2))
+                return 1
+        src = pkg_setting_path("tf_default.yaml")
+        content = None
+        if src:
+            with open(src, encoding="utf-8") as f:
+                content = f.read()
+        if not content:
+            content = DEFAULT_PROJECT_CONFIG
+        if t and t.get("work_dir"):
+            content = re.sub(r"(?m)^(\s*)work_dir:.*$",
+                             r"\1work_dir: " + t["work_dir"], content, count=1)
+        if tkey:  # v1.3：类型名同步成继承骨架的真实 key——模板可能还是旧名
+                  # （如全局已 bd→band，模板没跟上），直接生成会断链报错
+            mk = re.search(r"(?m)^(task_types:\s*\n\s*)[^\s:#]+:", content)
+            if mk:
+                content = (content[:mk.start()] + mk.group(1) + tkey + ":"
+                           + content[mk.end():])
+        with open(f0, "w", encoding="utf-8") as f:
+            f.write(content)
+        print("已生成 %s（项目配置：步骤/超算/路径按项目改它）" % f0)
+    f1 = os.path.join(ps, "setting.yaml")
+    if os.path.exists(f1):
+        print("已存在，跳过 %s" % f1)
+    else:
+        with open(f1, "w", encoding="utf-8") as f:
+            f.write(DEFAULT_PROJECT_SETTING)
+        print("已生成 %s" % f1)
+    f2 = os.path.join(ps, "hpc.yaml")
+    if os.path.exists(f2):
+        print("已存在，跳过 %s" % f2)
+    else:
+        hpc_name = (t or {}).get("hpc") or "jzzn"
+        src = pkg_setting_path(hpc_name + ".yaml")
+        if src:
+            shutil.copyfile(src, f2)
+        else:
+            with open(f2, "w", encoding="utf-8") as f:
+                f.write(DEFAULT_HPC_SETTING.replace("name: jzzn",
+                                                    "name: " + hpc_name))
+        print("已生成 %s" % f2)
+    # 按 hpc.yaml 的 template_map 把映射到的提交模板复制进项目（可再按项目改）
+    hpc_cfg = _load_yaml_file(f2)
+    sd = (t or {}).get("skill_dir")
+    if sd and not os.path.isabs(sd):
+        # v1.3：相对路径先按配置目录找，找不到再按软件根找
+        # （tf.yaml 放 setting/ 时，skill/ 在软件根下，只按配置目录会找偏）
+        pkg_root = os.path.normpath(os.path.join(
+            os.path.dirname(os.path.realpath(__file__)), "..", ".."))
+        for base in (cfg.get("_config_dir"), pkg_root):
+            cand = os.path.normpath(os.path.join(base or ".", sd))
+            if os.path.isdir(cand):
+                sd = cand
+                break
+        else:
+            sd = os.path.normpath(os.path.join(cfg.get("_config_dir") or ".", sd))
+    # v1.3：只复制该技能实际引用的模板——步骤级 gen_need 都声明了的技能
+    # （如 elastic 全程 std），按步骤清单并集复制；没声明的沿用全量（band）。
+    # 否则 elastic init 会对用不到的 ncl 模板报"请手动放入"误导用户
+    _need = set()
+    for _sc in ((t or {}).get("steps") or []):
+        _need.update(_sc.get("gen_need") or [])
+    _tmpl_need = {x for x in _need if str(x).endswith(".tpl")} or None
+    for logical, real in (hpc_cfg.get("template_map") or {}).items():
+        if _tmpl_need is not None and logical not in _tmpl_need:
+            continue
+        dst = os.path.join(ps, real)
+        if os.path.exists(dst):
+            print("已存在，跳过 %s" % dst)
+            continue
+        srcf = os.path.join(sd, real) if sd else None
+        if srcf and os.path.isfile(srcf):
+            shutil.copyfile(srcf, dst)
+            print("已复制模板 %s" % dst)
+        else:
+            print("提示：skill_dir 里找不到 %s，请手动放入 %s" % (real, dst))
+    # v1.2：技能开 skill_subdir 时本地建技能子目录（本地镜像超算结构：
+    # 材料/<技能>/{result,log} ↔ 超算 work/材料/<技能>/stepN）
+    if (t or {}).get("skill_subdir"):
+        sdname = str(t.get("dir_name") or tkey)
+        sddir = os.path.join(target, sdname)
+        if not os.path.isdir(sddir):
+            os.makedirs(sddir, exist_ok=True)
+            print("已创建技能目录 %s/（result/log 都在里面）" % sddir)
+        print("提示：%s 要与其它技能用不同超算时，把 project_setting/hpc.yaml "
+              "复制为 %s 再改字段即可（ssh_host/template_map/队列）"
+              % (tkey, os.path.join(sddir, "hpc.yaml")))
+    print("project_setting 就绪：%s（换超算改 hpc.yaml，调目录/结果改 setting.yaml）" % ps)
+    return 0
+
+
+def _yaml_type_block_ensure(path, tkey, kv_line):
+    """确保项目配置 task_types.<tkey> 段内有 kv_line（如 "    skill_subdir: true"）。
+    段缺失 → 追加新段；段存在且已有该键 → 不动。返回 True=有改动。"""
+    with open(path, encoding="utf-8") as f:
+        lines = f.readlines()
+    tt = next((i for i, l in enumerate(lines) if l.startswith("task_types:")),
+              None)
+    if tt is None:
+        return False
+    end = len(lines)   # task_types 块范围 [tt+1, end)
+    for i in range(tt + 1, len(lines)):
+        l = lines[i]
+        if l.strip() and not l.startswith((" ", "\t", "#")):
+            end = i
+            break
+    seg = next((i for i in range(tt + 1, end)
+                if re.match(r"^  %s\s*:" % re.escape(tkey), lines[i])), None)
+    if seg is None:
+        lines.insert(end, "  %s:\n%s\n" % (tkey, kv_line))
+    else:
+        seg_end = end   # 段范围 [seg+1, seg_end)：≥4 空格缩进/注释/空行
+        for i in range(seg + 1, end):
+            if lines[i].strip() and re.match(r"^  [^ \t#]", lines[i]):
+                seg_end = i
+                break
+        key = kv_line.split(":", 1)[0].strip()
+        for i in range(seg + 1, seg_end):
+            if re.match(r"^\s+%s\s*:" % re.escape(key), lines[i]):
+                return False   # 已有该键
+        lines.insert(seg + 1, kv_line + "\n")
+    with open(path, "w", encoding="utf-8") as f:
+        f.writelines(lines)
+    return True
+
+
+def _yaml_type_block_remove(path, tkey):
+    """从项目配置 task_types 下删除 tkey 段（段头到下一个两空格键/块尾）。
+    返回 True=有删除。与 _yaml_type_block_ensure 对称。"""
+    with open(path, encoding="utf-8") as f:
+        lines = f.readlines()
+    tt = next((i for i, l in enumerate(lines) if l.startswith("task_types:")),
+              None)
+    if tt is None:
+        return False
+    end = len(lines)
+    for i in range(tt + 1, len(lines)):
+        l = lines[i]
+        if l.strip() and not l.startswith((" ", "\t", "#")):
+            end = i
+            break
+    seg = next((i for i in range(tt + 1, end)
+                if re.match(r"^  %s\s*:" % re.escape(tkey), lines[i])), None)
+    if seg is None:
+        return False
+    seg_end = end
+    for i in range(seg + 1, end):
+        if lines[i].strip() and re.match(r"^  [^ \t#]", lines[i]):
+            seg_end = i
+            break
+    del lines[seg:seg_end]
+    with open(path, "w", encoding="utf-8") as f:
+        f.writelines(lines)
+    return True
+
+
+def _write_hpc_yaml(path, d, note):
+    """hpc.yaml 写出（tf 不依赖 PyYAML，手写简单结构；dict 值只到一层）。"""
+    keys = [k for k in ("name", "ssh_host", "template_map") if k in d]
+    keys += [k for k in d if k not in keys]
+    lines = ["# %s\n" % note]
+    for k in keys:
+        v = d[k]
+        if isinstance(v, dict):
+            lines.append("%s:\n" % k)
+            lines += ["  %s: %s\n" % (k2, v2) for k2, v2 in v.items()]
+        elif isinstance(v, list):
+            lines.append("%s: [%s]\n" % (k, ", ".join(str(x) for x in v)))
+        else:
+            lines.append("%s: %s\n" % (k, v))
+    with open(path, "w", encoding="utf-8") as f:
+        f.writelines(lines)
+
+
+def cmd_hpc(cfg, types, projs, cluster, tt, yes):
+    """v1.7：把 -p 指定的项目（一个或多个）分配到指定超算；未指定的项目一律不动。
+      tf -p X,Y hpc <集群名>             材料级：改写 project_setting/hpc.yaml
+                                         （该材料全部技能生效）
+      tf -tt elastic -p X,Y hpc <集群名> 技能级：写/改 材料/<技能>/hpc.yaml
+                                         （v1.6 私有配置，优先级最高）
+    集群主配置 = 包内 setting/<集群名>.yaml（照 jzzn.yaml 建）；其 template_map
+    指向的模板文件须能被找到（skill/<技能>/、project_setting/ 或 <技能>/）。"""
+    if not cluster:
+        print("错误：缺集群名。用法：tf -p 项目[,项目...] [-tt 技能] hpc <集群名>")
+        return 1
+    if not projs:
+        print("错误：hpc 必须用 -p 显式指定项目（逗号分隔多个）；未指定的不动。")
+        return 1
+    master_path = pkg_setting_path(cluster + ".yaml")
+    if not master_path:
+        print("错误：没有集群主配置 setting/%s.yaml。照 jzzn.yaml 建一份："
+              "name/ssh_host/template_map（指向 submit_%s_vaspstd_*.tpl 等，"
+              "模板文件放进 skill/<技能>/ 目录）。可用集群：%s"
+              % (cluster, cluster, _list_pkg_clusters()))
+        return 1
+    master = _load_yaml_file(master_path)
+    if not master.get("ssh_host"):
+        print("警告：%s 没写 ssh_host——提交不知道该连哪台。" % master_path)
+    todo, seen = [], set()
+    for t in types:
+        root = t.get("local_root")
+        if not root:
+            continue
+        _r, mats = discover_local(root)
+        for m in mats:
+            # 同一材料可能被多个配置段重复发现（主流程靠 _dedup_segments
+            # 去重，这里自查）：hpc.yaml 按 材料+技能 写，一份就够
+            key = (t["key"], os.path.realpath(m["lpath"]))
+            if key in seen:
+                continue
+            resolve_material_local(t, root, m)
+            if m["name"] in projs or os.path.basename(m["name"]) in projs:
+                seen.add(key)
+                todo.append((t, root, m))
+    if not todo:
+        print("错误：没找到 -p 指定的项目（%s）。" % ", ".join(projs))
+        return 1
+    print("将把 %d 个项目的%s分配到集群 %s（ssh_host=%s）："
+          % (len(todo), (" [%s] 技能" % tt) if tt else "（全部技能）",
+             master.get("name") or cluster, master.get("ssh_host") or "未写"))
+    for t, root, m in todo:
+        print("  %-24s → %s" % (m["name"], ("材料/%s/hpc.yaml" % t["key"])
+                                 if tt else "project_setting/hpc.yaml"))
+    if not yes:
+        ans = input("确认执行？ [y/N] ").strip().lower()
+        if ans not in ("y", "yes"):
+            print("已取消操作。")
+            return 1
+    fails = 0
+    for t, root, m in todo:
+        if tt:
+            sub = m.get("_subdir")
+            if not sub:
+                print("%s: 失败——技能 %s 没开 skill_subdir，写不了技能私有 "
+                      "hpc.yaml（去掉 -tt 改材料级，或先开 subdir）"
+                      % (m["name"], t["key"]))
+                fails += 1
+                continue
+            tdir = os.path.join(m["lpath"], sub)
+            os.makedirs(tdir, exist_ok=True)
+        else:
+            tdir = (m.get("ps") or {}).get("dir")
+            if not tdir:
+                print("%s: 失败——缺 project_setting（先 tf init）" % m["name"])
+                fails += 1
+                continue
+        target = os.path.join(tdir, "hpc.yaml")
+        new = _load_yaml_file(target) or {}
+        new.update(master)   # 主配置字段全量覆盖；旧文件里的额外字段保留
+        _write_hpc_yaml(target, new, "超算配置（tf hpc %s 于 %s 生成/更新）"
+                        % (cluster, time.strftime("%Y-%m-%d %H:%M:%S")))
+        resolve_material_local(t, root, m)   # 重新解析（带上新写的 hpc.yaml）再查模板
+        missing = [lg for lg in (master.get("template_map") or {})
+                   if not find_asset(cfg, t, m, lg)]
+        note = ("；★ 模板缺失：%s——把文件放进 skill/%s/ 或 %s"
+                % (", ".join(missing), t["key"], tdir)) if missing else ""
+        print("%s[%s]: hpc → %s（%s）%s"
+              % (m["name"], t["key"], master.get("name") or cluster,
+                 master.get("ssh_host") or "未写", note))
+    print("完成。验证：tf -tt %s 状态表 hpc 列应显示 %s。"
+          % (tt or "<技能>", master.get("name") or cluster))
+    return 1 if fails else 0
+
+
+def _list_pkg_clusters():
+    here = os.path.dirname(os.path.realpath(__file__))
+    out = []
+    for d in (os.path.join(here, "..", "..", "setting"),
+              os.path.join(here, "..", "setting"),
+              os.path.expanduser("~/.config/taskflow/setting")):
+        if os.path.isdir(d):
+            out += [f[:-5] for f in os.listdir(d)
+                    if f.endswith(".yaml") and f != "tf_default.yaml"]
+    return ", ".join(sorted(set(out))) or "（无）"
+
+
+def cmd_auto(cfg, arg):
+    """v1.5 tf auto [on|off]：一键开关自动提交（改写全局 tf.yaml 的
+    auto_advance 行；没有该行则补在文件头）。无参数 = 显示当前状态。
+    只影响 auto_advance；后台监控（auto_watch）不受影响。"""
+    path = cfg.get("_config_path")
+    if not path:
+        print("错误：没有找到配置文件。")
+        return 1
+    if arg is None:
+        print("auto_advance 当前：%s（%s）"
+              % ("开" if cfg.get("auto_advance") else "关", path))
+        print("切换：tf auto on / tf auto off")
+        return 0
+    a = str(arg).strip().lower()
+    if a not in ("on", "off", "1", "0", "true", "false", "开", "关"):
+        print("错误：auto 只接受 on/off（收到 '%s'）。" % arg)
+        return 1
+    on = a in ("on", "1", "true", "开")
+    try:
+        with open(path, encoding="utf-8") as f:
+            lines = f.readlines()
+        for i, ln in enumerate(lines):
+            if re.match(r"^auto_advance\s*:", ln):
+                lines[i] = "auto_advance: %s\n" % ("true" if on else "false")
+                break
+        else:
+            lines.insert(0, "auto_advance: %s\n" % ("true" if on else "false"))
+        with open(path, "w", encoding="utf-8") as f:
+            f.writelines(lines)
+    except OSError as e:
+        print("错误：读写配置失败：%s" % e)
+        return 1
+    print("auto_advance 已%s（%s）。" % ("开启" if on else "关闭", path))
+    if on:
+        print("status/watch 会自动提交可开始的步骤；手动 start/retry/rerun 不受影响。")
+    else:
+        print("status/watch 只看不提交；手动 start/retry/rerun 不受影响。")
+        print("后台监控仍在跑（只拉结果）；停监控用 tf watch --stop。")
+    return 0
+
+
+def cmd_adopt(cfg, types, proj, yes, dry, tt):
+    """v1.5：接管手工整理的技能子目录结构。适用场景：人手工把 POSCAR、
+    project_setting、result、log 搬进了 材料/<技能>/。tf 的规矩是 POSCAR 和
+    project_setting 必须在材料根（所有技能共用），<技能>/ 里只放该技能产物。
+      第 1 步（本地修正）：POSCAR、project_setting 挪回材料根；
+                          根上残留的 result/log 挪进 <技能>/；
+      第 2 步（并入迁移）：重新载入配置+采集，逐材料 migrate-subdir——远端
+                          step* 移进 <技能>/、项目配置开 skill_subdir；
+                          有作业在跑的跳过，算完再跑一次 adopt 即可。
+    用法：tf -tt band adopt [--dry-run] [-y] [-p MAT]"""
+    if not tt:
+        print("错误：adopt 需要 -tt 指定接管哪个技能（如 tf -tt band adopt）。")
+        return 1
+    raw_tt = ((cfg.get("task_types") or {}).get(tt) or {})
+    sub = str(raw_tt.get("dir_name") or tt)
+    roots = [os.path.expanduser(r) for r in (cfg.get("project_roots") or [])]
+    if not roots:
+        print("错误：全局 tf.yaml 没有 project_roots。")
+        return 1
+    # ---- 第 1 步：扫 <root>/**/<sub>，上一级即材料目录 ----
+    targets, plans = [], {}
+    for root in roots:
+        if not os.path.isdir(root):
+            continue
+        for depth in ("*", "*/*", "*/*/*"):
+            for sd in sorted(glob.glob(os.path.join(root, depth, sub))):
+                if not os.path.isdir(sd):
+                    continue
+                D = os.path.dirname(sd)
+                if proj and os.path.relpath(D, root) != proj \
+                        and os.path.basename(D) != proj:
+                    continue
+                if (D, root) in targets:
+                    continue
+                targets.append((D, root))
+                fixes = []
+                if (not os.path.isfile(os.path.join(D, "POSCAR"))
+                        and os.path.isfile(os.path.join(sd, "POSCAR"))):
+                    fixes.append((os.path.join(sd, "POSCAR"),
+                                  os.path.join(D, "POSCAR"),
+                                  "POSCAR 挪回材料根（多技能共用，必须在根）"))
+                psd = os.path.join(sd, "project_setting")
+                if (os.path.isdir(psd)
+                        and not os.path.isdir(os.path.join(D, "project_setting"))):
+                    fixes.append((psd, os.path.join(D, "project_setting"),
+                                  "project_setting 挪回材料根（band/elastic 段都在里面）"))
+                elif os.path.isdir(psd):
+                    print("警告：%s 材料根和 %s/ 下各有一份 project_setting，"
+                          "adopt 不动——请人工合并后删掉 %s 下那份（保留材料根的），"
+                          "否则 %s/ 会被识别成名叫 %s 的新材料。"
+                          % (D, sub, sd, sub, sub))
+                for d in ("result", "log"):
+                    rd = os.path.join(D, d)
+                    if os.path.isdir(rd):
+                        fixes.append((rd, os.path.join(sd, d),
+                                      "%s/ 挪进 %s/" % (d, sub)))
+                if fixes:
+                    plans[D] = fixes
+    if not targets:
+        print("没有找到含 %s/ 子目录的材料目录（%s）。" % (sub, ", ".join(roots)))
+        return 0
+    if plans:
+        print("第 1 步：本地布局修正（%d 个材料）：" % len(plans))
+        for D, fixes in plans.items():
+            for src, dst, why in fixes:
+                print("  %-14s %s → %s" % (os.path.basename(D), src, why))
+    else:
+        print("第 1 步：本地布局无需修正。")
+    if dry:
+        print("（--dry-run，未执行）")
+        return 0
+    if plans and not yes:
+        ans = input("执行以上移动？ [y/N] ").strip().lower()
+        if ans not in ("y", "yes"):
+            print("已取消操作。")
+            return 1
+    for D, fixes in plans.items():
+        for src, dst, _why in fixes:
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            shutil.move(src, dst)
+        print("%s: 布局已修正" % os.path.basename(D))
+    # ---- 第 2 步：重新载入配置（第 1 步可能挪回了 project_setting）→ 采集 → 迁移 ----
+    print("第 2 步：远端 step* 进 %s/ + 项目配置开 skill_subdir：" % sub)
+    cfg2, _ = load_config(cfg.get("_config_path"))
+    for k in ("host", "user"):
+        if cfg.get(k) is not None:
+            cfg2[k] = cfg[k]
+    cfg2["_config_dir"] = cfg["_config_dir"]
+    cfg2["_config_path"] = cfg["_config_path"]
+    cfg2 = merge_project_configs(cfg2)
+    types2 = get_types(cfg2, tt=tt)
+    if not types2:
+        print("错误：%s 还没有任何项目配置段——先 tf init，再重跑 adopt。" % tt)
+        return 1
+    data2 = collect_data(cfg2, types2)
+    by_name = {m["name"]: m for t2 in data2["types"] for m in t2["materials"]}
+    fails = 0
+    for D, root in targets:
+        rel = os.path.relpath(D, root)
+        m = by_name.get(rel)
+        if m is None:
+            print("%s: 跳过——未被识别为材料（材料根缺 POSCAR？补好后 tf init）" % rel)
+            continue
+        if not (m.get("ps") or {}).get("dir"):
+            print("%s: 跳过——缺 project_setting（先 tf -tt %s -p %s init，"
+                  "再重跑 adopt）" % (rel, tt, rel))
+            continue
+        fails += cmd_migrate_subdir(cfg2, data2, rel, True, False)
+    print("adopt 完成。用 tf -tt %s 核对：算好的应显示 done；被跳过的"
+          "（在跑/缺配置）处理完再跑一次 tf -tt %s adopt -y。" % (tt, tt))
+    return 1 if fails else 0
+
+
+def cmd_migrate_subdir(cfg, data, proj, yes, dry):
+    """v1.2：把该技能已完成材料的数据迁进技能子目录（跟着项目走的目录结构）。
+    远端 work/材料/step* → work/材料/<技能>/step*；本地 result、log → 材料/<技能>/；
+    项目配置该技能段加 skill_subdir: true（状态随即按新路径采集，保持 done）。
+    批量模式只迁全部完成的材料；有作业在跑的一律跳过；-p 指定放宽为无作业即可迁。"""
+    t = data["types"][0]
+    key, sub = t["key"], str(t.get("dir_name") or t["key"])
+    mats = [m for m in t["materials"]
+            if not proj or m["name"] == proj
+            or os.path.basename(m["name"]) == proj]
+    if proj and not mats:
+        print("错误：%s 下没有材料 %s。" % (key, proj))
+        return 1
+    todo, skipped = [], []
+    for m in mats:
+        if m.get("_subdir"):
+            skipped.append((m, "已是 %s/ 子目录结构" % sub))
+            continue
+        jobs = [s for s in m["steps"] if s.get("job")]
+        if jobs:   # v1.4.1：jobs 装的是步骤不是作业——取 jobs[0]["job"]["id"]，
+                   # 此前 jobs[0]["id"] 直接 KeyError（有在跑作业时崩溃）
+            skipped.append((m, "有作业在跑（jobid=%s），算完再迁"
+                            % jobs[0]["job"]["id"]))
+            continue
+        if proj is None and not _mat_all_done(m):
+            skipped.append((m, "未全部完成（要迁单个：-p %s migrate-subdir）"
+                            % m["name"]))
+            continue
+        todo.append(m)
+    for m, why in skipped:
+        print("%s: 跳过——%s" % (m["name"], why))
+    if not todo:
+        print("没有可迁移的材料。")
+        return 0
+    print("将把 %d 个材料的 %s 数据迁进 %s/ 子目录：" % (len(todo), key, sub))
+    for m in todo:
+        print("  %-14s 远端 %s/step* → %s/%s/step*；本地 result、log → %s/"
+              % (m["name"], m["path"], m["path"], sub,
+                 os.path.join(m["lpath"], sub)))
+    if dry:
+        print("（--dry-run，未执行）")
+        return 0
+    if not yes:
+        ans = input("确认迁移？ [y/N] ").strip().lower()
+        if ans not in ("y", "yes"):
+            print("已取消。")
+            return 1
+    fails = 0
+    for m in todo:
+        host = m.get("host_eff") or "__default__"
+        tag = "%s[%s]" % (m["name"], key)
+        rc, out = run_remote(
+            cfg, "cd %s && mkdir -p %s && for d in step*/; do "
+                 "[ -d \"$d\" ] && mv \"$d\" %s/; done; true"
+                 % (shlex.quote(m["path"]), shlex.quote(sub), shlex.quote(sub)),
+            host=host)
+        if rc != 0:
+            print("%s: 远端迁移失败。%s" % (tag, out))
+            fails += 1
+            continue
+        lp = m["lpath"]
+        sdir = os.path.join(lp, sub)
+        os.makedirs(sdir, exist_ok=True)
+        moved = []
+        for d in ("result", "log"):
+            srcd = os.path.join(lp, d)
+            if os.path.isdir(srcd):
+                shutil.move(srcd, os.path.join(sdir, d))
+                moved.append(d)
+        m["log_dir"] = os.path.join(sdir, "log")   # log 已随迁，改指新位置
+        # 项目配置该技能段开 skill_subdir——仅材料级配置才改；
+        # 体系级共享配置（多材料共用）改了会误伤未迁的兄弟材料，提示手工处理
+        ps = (m.get("ps") or {}).get("dir")
+        own_ps = (ps and os.path.isdir(ps) and os.path.dirname(
+            os.path.realpath(ps)) == os.path.realpath(lp))
+        cfg_note = ""
+        if own_ps:
+            f0s = glob.glob(os.path.join(ps, "tf_*.yaml"))
+            if f0s and _yaml_type_block_ensure(f0s[0], key,
+                                               "    skill_subdir: true"):
+                cfg_note = "，配置已开 skill_subdir"
+            else:
+                cfg_note = "，配置已有 skill_subdir"
+        else:
+            cfg_note = ("，注意：%s，请手工给 %s 段加 skill_subdir: true"
+                        % ("项目配置为多材料共享" if ps else
+                           "未找到材料级 project_setting", key))
+        print("%s: 已迁移（远端 step* + 本地 %s%s）"
+              % (tag, "/".join(moved) if moved else "无本地文件", cfg_note))
+        log_action(m, "migrate-subdir → %s/（远端 step* + 本地 %s）"
+                   % (sub, "/".join(moved)))
+    print("迁移完成。tf 查看状态应仍为 done；挂 elastic：tf -tt elastic init")
+    return 1 if fails else 0
+
+
+# ---------------------------------------------------------------------------
+# 入口
+# ---------------------------------------------------------------------------
+USAGE = """\
+用法:
+  tf [选项] [ROOT] [命令]
+
+命令:
+  status    状态总表（缺省命令）；加 -p 看单材料详情
+  start     开始：输入没生成先 gen 再提交。无 -p = 一键推进全部材料
+  stop      取消作业。无 -p = 一键停止全部作业（有确认）；-p = 该材料全部作业；-p -job = 指定步骤。
+            取消的步骤打 scancel 标记：状态列显示 scancel，auto_advance
+            和批量 start 都不会再动它；重跑：-p X start（保留文件直接重交）/
+            retry / rerun，或跨材料 -status scancel start（retry/rerun）
+  retry     用现有输入文件重交（适合在超算手改文件后）。无 -p = 一键重交所有 FAIL 步骤
+  rerun     删除旧的生成文件 → gen 重新生成 → 提交。无 -p 无 -j = 全部材料推倒重来；
+            -j 不带 -p = 全部材料只重做该步骤（脚本改动后一键修复，有确认）
+  clean     只删不建，回到 PREP：无 -p = 全部材料清空（本地+超算只留 POSCAR）；
+            -p X = 该材料清空；-p C20 = 该体系所有材料；-p X -j Y = 只删该步骤目录。
+            关联作业一并取消（有确认，-y 跳过）
+  auto      一键开关自动提交：tf auto on 开 / tf auto off 关 / 无参看当前。
+            改写全局 tf.yaml 的 auto_advance；关后 status/watch 只看不提交，
+            手动 start/retry/rerun 不受影响（动目录、恢复备份前先 off）
+  hpc       把 -p 指定的项目分配到指定超算（未指定的项目一律不动）：
+            tf -p X,Y hpc 集群名              材料级（该材料全部技能生效）
+            tf -tt elastic -p X,Y hpc 集群名  只改 elastic 技能（写 材料/elastic/hpc.yaml）
+            集群主配置 = 包内 setting/<名>.yaml（照 jzzn.yaml 建 name/ssh_host/
+            template_map）；模板文件放 skill/<技能>/。状态表 hpc 列按技能显示
+  adopt     接管手工整理的技能子目录（须 -tt）：人手工把 POSCAR、
+            project_setting、result、log 搬进了 材料/<技能>/ 时用——
+            POSCAR、project_setting 挪回材料根（多技能共用，必须在根），
+            result/log 留在技能目录；随后自动做 migrate-subdir：远端 step*
+            移进技能目录、项目配置开 skill_subdir。有作业在跑的跳过，
+            算完再跑一次。--dry-run 先看计划，-y 免确认
+  migrate-subdir  把该技能已完成材料迁进技能子目录（须 -tt）：
+            远端 step* → work/材料/<技能>/step*，本地 result、log → 材料/<技能>/，
+            项目配置自动开 skill_subdir。批量只迁全完成的；在跑的自动跳过；
+            -p X 可强制迁单个（无作业即可）。--dry-run 先看计划，-y 免确认
+  dir       只输出目录路径：-tt 类型根 / -p 材料根 / -p -job 步骤目录
+  init      初始化：不带 -p = 当前目录下所有材料批量生成 project_setting/
+            （每个材料目录一份）；-p X = 只初始化该材料；-p X -j Y = 只生成
+            该步骤输入文件（gen），不提交——提交前可先检查。
+            配 -tt = 给已有项目追加该技能类型段（如 band 项目里
+            tf -tt elastic init 追加 elastic 段，并建技能子目录）
+  fetch     手动强制拉回结果（status 时已自动保存完成的步骤到 result/，
+            项目 setting.yaml 里 auto_fetch: false 可关闭自动保存）
+  watch     监控模式：每 -i 秒（默认 300）自动刷新状态、auto-fetch 算完步骤、
+            auto-advance 提交下一步；有变化才打印总表；Ctrl+C 退出。
+            每轮自动检测配置文件改动（tf.yaml、project_setting/*.yaml、
+            材料或技能的 hpc.yaml）并重载——改配置不用重启监控。
+            加 -d 放后台运行（日志 .tf_watch.log，不占用终端），
+            tf watch --stop 停止后台监控（任意目录可执行）。
+            零输入全自动：tf.yaml 里 auto_watch: true（任何 tf 命令顺带拉起
+            监控）+ tf watch --install（crontab 保活，重启后自动恢复，
+            --uninstall 移除）
+  json      输出 JSON
+  config    打印示例配置
+  help      显示本帮助
+
+选项:
+  -tt TT          任务类型（band/elastic/自定义，配置里 task_types 的 key）；
+                  不指定时 -p 在所有类型里解析，跨类型重名会提示补 -tt
+  -p MAT          指认 project：完整名（C20/qHPC20）或唯一 basename（qHPC20）；
+                  多个项目用逗号分隔（-p A,B）或直接跟在后面（-p A B retry）
+  -j, -job STEP   指认 job（步骤名/label/1 起始序号）。配 -p = 该材料的该步骤；
+                  start/stop/retry/rerun/clean 可不带 -p = 全部材料只操作该步骤；
+                  多个步骤逗号分隔（-j A,B）或直接跟在后面（-j A B start）
+  -x, --exclude   跳过指定项目（逗号分隔，全名或 basename），任何命令可用
+  -status ST      只保留含指定状态步骤的材料：done/running/pd/error/
+                  waiting/scancel，逗号分隔，对任意命令生效。如：
+                  tf -status scancel            只看被 stop 取消的
+                  tf -status scancel start      把它们全部重跑（保留文件直接重交）
+                  tf -status error retry        重交全部失败步骤
+  -c, --config    配置文件（缺省找 ./tf.yaml、~/.config/taskflow/tf.yaml、~/.tf.yaml）
+  --host HOST     覆盖配置里的 ssh 主机
+  -u, --user      squeue 查询用户
+  -f, --force     已有作业时先 scancel 再提交；start 一个 FAIL 步骤；前序缺失强制执行
+  --all           fetch 时拉回每个步骤的全部文件（不只 fetch_files 清单）；
+                  配合 -tt 可只拉某个技能：tf -tt elastic fetch --all
+  --hide-done     状态表隐藏全部步骤都完成的项目（配置 hide_done: true 默认开，
+                  --show-done 临时取消）
+  -i, --interval  watch 刷新间隔秒数（默认 300）
+  -y, --yes       stop/rerun 免确认
+  -V, --version   显示版本号
+  -h, --help      显示帮助（同 tf help）
+
+规则:
+  同一任务类型下项目名不允许重复（启动即报错）；不同类型下允许同名。
+  状态词: done 完成 | running 运行中 | pd 排队 | error 未通过判据 | waiting 未开始
+        | scancel 被 tf stop 取消（打标记，auto 不会重跑；显式 start/
+          retry/rerun 重跑后标记自动清除）
+  表格 hpc 列 = 该项目所用超算，dim 列 = 2D/3D 判定；每个项目两行：
+  第一行 = 各步骤状态词，第二行 = 节点/任务号/已跑时间（排队时为任务号+原因）。
+  同 group 的步骤合并为一列（如三段式弛豫 S1_relax；第二行显示走到哪段）。
+  本地模式（类型配置 local_root）：输入文件以本地项目目录为准（含 POSCAR），
+  project_setting/ 就近优先（tf_<项目名>.yaml = 项目配置，setting.yaml 定路径，
+  hpc.yaml 定超算与模板映射），超算只负责计算，目录树 = work_dir + 项目相对路径。
+  配置跟着项目走：全局 tf.yaml 只需 project_roots 列出项目根；多个项目配置
+  定义同一类型 key = 该类型的多个分段（local_root 不同），表格合并显示。
+  能带画图步骤：step3/4 算完后自动追加 S3.1_plot/S4.1_plot（材料目录运行画图
+  脚本，不交 SLURM），状态 = completed/not started/error，产物整目录自动拉回。
+  类型配置 plot_steps: false 关闭（备注见 tf config 输出的模板）。
+  技能子目录：类型配置 skill_subdir: true 时，该技能的计算放进材料目录下的
+  技能子文件夹（远端 work/材料/<dir_name>/stepN，本地 result 在 材料/<dir_name>/result），
+  dir_name 缺省 = 类型 key（想叫别的名字就写 dir_name: 名字）。同一材料可同时
+  挂多个技能（项目配置里写多段），各技能的目录互不干扰；平铺结构的老项目
+  不要直接开（会被当新材料），迁移方法见 tf.yaml band 块注释。
+  不同技能跑不同超算：把 project_setting/hpc.yaml 复制为
+  材料/<技能>/hpc.yaml 再改字段（ssh_host/template_map/队列）即可，
+  优先级高于材料级 hpc.yaml；材料/<技能>/ 下的同名模板也最优先被用。
+
+示例:
+  tf                                   全部状态总表
+  tf -tt band                          只看能带类
+  tf -tt band migrate-subdir           band 已完成材料迁进 band/ 子目录
+  tf -tt elastic start                 开始 elastic 技能全部材料
+  tf -tt elastic -p Ela1 start         只开始 elastic 的 Ela1（指定材料）
+  tf -p qHPC20 status                  单材料详情（basename 即可）
+  tf -p C20/qHPC20 -job 1 retry        用现有文件重交第 1 步（完整名也行）
+  tf -p qHPC60 qTP1C60 retry       同时重交多个项目（用超算上已改好的输入直接提交）
+  tf -tt band -p qTPC24 -job S2_static start
+  tf -p qHPC20 stop                    取消该材料所有作业（有确认，打 scancel 标记）
+  tf -status scancel                   只看被 stop 取消的材料
+  tf -status scancel start             把它们全部重跑（保留文件直接重交）
+  tf auto off                          暂停自动提交（动目录/恢复备份前先做）
+  tf auto on                           恢复自动提交
+  tf -tt band adopt --dry-run          接管手工整理的 band/ 目录：先看计划
+  tf -tt band adopt -y                 执行接管（POSCAR/配置回根 + 远端迁入 band/）
+  tf -tt elastic -p qHPC20 hpc tianhe  qHPC20 的 elastic 技能切到 tianhe 集群
+  tf -p qHPC20 -job 1 dir              输出该步骤在超算的目录路径
+  ssh jzzn "cd $(tf -p qHPC20 -job 1 dir) && tail -50 OUTCAR"
+  tf start                             一键推进所有材料
+  tf stop -y                           一键停止全部作业
+  tf retry                             一键重交所有 FAIL 步骤
+  tf rerun                             全部材料删档重来（有确认）
+  tf -j S3_WAVECAR rerun -y            全部材料只重做 S3（用本地最新脚本重新生成）
+  tf -j S3_WAVECAR -x qHPC60 rerun -y  同上但跳过 qHPC60
+  tf -j S2_static start                全部材料只提交 S2 步骤
+  tf -j S3.1_plot S4.1_plot start      全部材料只跑两个画图步骤
+  cd ~/Fullerene_Network && tf init    批量初始化目录下所有项目
+  tf -p C20/qHPC20 init                只初始化 C20 这一个项目
+  tf -p qHPC20 fetch                   拉回该材料各步骤结果到 result/
+  tf fetch                             拉回全部材料结果
+  tf clean                             全部材料清空（留 POSCAR）
+  tf -p C20 clean                      清空 C20 体系所有材料
+  tf -p qHPC20 -j 1 clean              只删 S1_opt 步骤目录
+"""
+
+
+def _dbg_t(label, t0):
+    """TF_DEBUG_TIME=1 时向 stderr 打印各阶段耗时。"""
+    if os.environ.get("TF_DEBUG_TIME"):
+        import time as _t
+        print("[计时] %s: %.1fs" % (label, _t.time() - t0), file=sys.stderr)
+
+
+def collect_data(cfg, types):
+    """按类型采集全部材料状态（远端/本地两段路径），供各命令及 watch 循环复用。"""
+    data_types = []
+    v2 = [t for t in types if not t.get("local_root")]
+    if v2:
+        data_types.extend(collect(cfg, v2)["types"])
+    segs = [t for t in types if t.get("local_root")]
+    if segs:   # v3.20：跨段批量采集（一次 ssh 完成全部材料）
+        for te in collect_v3_batch(cfg, segs):
+            exist = next((x for x in data_types
+                          if x["key"] == te["key"] and x.get("local")), None)
+            if exist:
+                exist["materials"] = _dedup_segments(exist["materials"]
+                                                     + te["materials"])
+            else:
+                data_types.append(te)
+    data = annotate({"host": cfg.get("host") or "local", "types": data_types})
+    local_by_key = {t["key"]: t for t in types}
+    for t in data["types"]:
+        lc = local_by_key.get(t["key"], {})
+        t["steps_cfg"] = lc.get("steps") or []
+        t["gen_dir"] = lc.get("gen_dir")
+        t["gen_need"] = lc.get("gen_need")
+        t["skill_dir"] = lc.get("skill_dir")
+    check_duplicates(data)
+    return data
+
+
+def apply_exclude(data, exclude):
+    """-x：跳过指定项目（全名或 basename，逗号分隔）。"""
+    if not exclude:
+        return
+    ex = {x.strip() for x in exclude.split(",") if x.strip()}
+    for t in data["types"]:
+        t["materials"] = [m for m in t["materials"]
+                          if m["name"] not in ex
+                          and os.path.basename(m["name"]) not in ex]
+
+
+def filter_projs(data, projs):
+    """只保留指定材料（全名或 basename）；空列表 = 不过滤。"""
+    if not projs:
+        return
+    want = set(projs)
+    for t in data["types"]:
+        t["materials"] = [m for m in t["materials"]
+                          if m["name"] in want
+                          or os.path.basename(m["name"]) in want]
+
+
+STATUS_ALIAS = {   # v1.4 -status 选项的状态词 → 内部 kind
+    "done": "OK", "ok": "OK", "completed": "OK",
+    "running": "R", "run": "R", "r": "R",
+    "pd": "PD", "pending": "PD", "queue": "PD", "queued": "PD",
+    "error": "FAIL", "fail": "FAIL", "failed": "FAIL",
+    "waiting": "WAIT", "wait": "WAIT",
+    "todo": "TODO", "prep": "PREP", "other": "OTHER",
+    "scancel": "SCANCEL", "scancelled": "SCANCEL", "cancel": "SCANCEL",
+    "cancelled": "SCANCEL", "canceled": "SCANCEL",
+}
+
+
+def filter_status(data, spec):
+    """v1.4 -status：只保留"有步骤处于指定状态"的材料（对任意命令生效：
+    status 只看它们，start/retry/rerun/stop 只操作它们）。
+    状态词大小写不限、支持别名，逗号分隔多个。"""
+    kinds = set()
+    for x in str(spec or "").split(","):
+        x = x.strip()
+        if x:
+            kinds.add(STATUS_ALIAS.get(x.lower(), x.upper()))
+    if not kinds:
+        return
+    for t in data["types"]:
+        t["materials"] = [m for m in t["materials"]
+                          if any(s["kind"] in kinds for s in m["steps"])]
+
+
+def status_spec_has_scancel(spec):
+    """-status 里显式含 scancel → start/retry 放行 SCANCEL 步骤。"""
+    return any(x.strip().lower() in ("scancel", "scancelled", "cancel",
+                                     "cancelled", "canceled")
+               for x in str(spec or "").split(","))
+
+
+def _snapshot(data):
+    """状态指纹：材料 → 各步骤 (label, kind, 作业状态)，watch 据此判断有无变化。"""
+    return json.dumps({m["name"]: [(s["label"], s["kind"],
+                                    (s.get("job") or {}).get("state"))
+                                   for s in m["steps"]]
+                       for t in data["types"] for m in t["materials"]},
+                      sort_keys=True)
+
+
+WATCH_PID = ".tf_watch.pid"     # watch 后台模式的 pid 文件名
+WATCH_LOG = ".tf_watch.log"     # watch 后台模式的日志文件名
+
+
+def _watch_files(cfg=None):
+    """watch 的 pid/log 路径：v1.10 起锚定配置文件所在目录（setting/），
+    在任何目录执行 tf watch --stop 都找得到；旧版 cwd 下的 pid 文件由
+    _watch_stop 兜底识别。"""
+    base = (cfg or {}).get("_config_dir") or os.getcwd()
+    return (os.path.join(base, WATCH_PID), os.path.join(base, WATCH_LOG))
+
+
+def _watch_running_pid(cfg=None):
+    """返回在跑的后台监控 PID（没有在跑返回 None）。先看锚定位置，再看 cwd。"""
+    cands = [_watch_files(cfg)[0], os.path.abspath(WATCH_PID)]
+    for pidfile in dict.fromkeys(cands):
+        if not os.path.isfile(pidfile):
+            continue
+        try:
+            pid = int(open(pidfile).read().strip())
+        except ValueError:
+            pid = None
+        if pid and _watch_pid_alive(pid):
+            return pid, pidfile
+        os.remove(pidfile)
+    return None, None
+
+
+def _watch_pid_alive(pid):
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+def _watch_daemon(a, mat_toks, root, cfg=None):
+    """tf watch -d：把监控作为 detached 子进程放后台，日志写配置目录下。"""
+    pidfile, logfile = _watch_files(cfg)
+    pid, _ = _watch_running_pid(cfg)
+    if pid:
+        print("tf watch 已在后台运行 (PID %d)" % pid)
+        print("日志：%s（tail -f 查看）；停止：tf watch --stop" % logfile)
+        return
+    argv = [sys.executable, os.path.realpath(sys.argv[0])]
+    if a.config:
+        argv += ["-c", a.config]
+    if a.tt:
+        argv += ["-tt", a.tt]
+    if a.proj:
+        argv += ["-p", a.proj]
+    if a.exclude:
+        argv += ["-x", a.exclude]
+    if a.user:
+        argv += ["-u", a.user]
+    argv += ["watch", "-i", str(a.interval)]
+    if root:
+        argv.append(root)
+    argv += mat_toks
+    log = open(logfile, "ab", buffering=0)
+    p = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=log,
+                         stderr=subprocess.STDOUT, start_new_session=True)
+    with open(pidfile, "w") as f:
+        f.write(str(p.pid))
+    print("tf watch 已转入后台 (PID %d)" % p.pid)
+    print("日志：%s（tail -f %s 查看）" % (logfile, logfile))
+    print("停止：tf watch --stop")
+
+
+def _watch_stop(cfg=None):
+    """tf watch --stop：按 pid 文件停止后台监控（任意目录可执行）。"""
+    import signal as _sig
+    pid, pidfile = _watch_running_pid(cfg)
+    if pid:
+        os.kill(pid, _sig.SIGTERM)
+        try:
+            os.remove(pidfile)
+        except OSError:
+            pass
+        print("已停止 tf watch (PID %d)。" % pid)
+        return 0
+    print("没有运行中的 tf watch。")
+    return 1
+
+
+def _watch_ensure(cfg):
+    """v1.10 auto_watch：任何 tf 命令顺带确保后台监控在跑（没在跑就拉起）。
+    配合 tf watch --install 的 crontab 保活 = 零输入全自动：
+    重启/WSL 关闭后 cron 拉起；平时敲任何 tf 命令也会顺带拉起。
+    保活失败绝不影响主命令。"""
+    if not cfg.get("auto_watch"):
+        return
+    try:
+        pid, _ = _watch_running_pid(cfg)
+        if pid:
+            return
+        pidfile, logfile = _watch_files(cfg)
+        argv = [sys.executable, os.path.realpath(sys.argv[0])]
+        if cfg.get("_config_path"):
+            argv += ["-c", cfg["_config_path"]]
+        argv += ["watch", "-i", str(cfg.get("watch_interval") or 300)]
+        log = open(logfile, "ab", buffering=0)
+        p = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=log,
+                             stderr=subprocess.STDOUT, start_new_session=True)
+        with open(pidfile, "w") as f:
+            f.write(str(p.pid))
+        print("已自动启动后台监控 tf watch (PID %d)。日志：%s" % (p.pid, logfile))
+    except Exception:
+        pass
+
+
+def _watch_cron(install):
+    """tf watch --install/--uninstall：crontab 保活——每 10 分钟检查，
+    监控死了（重启/崩溃）自动拉起。tf watch -d 有 pid 检查，不会重复启动。"""
+    import shutil as _sh
+    marker = "# tf-watch-keepalive"
+    if not _sh.which("crontab"):
+        print("系统没有 crontab 命令。手动保活方案：")
+        print("  每 10 分钟执行一次：%s watch -d" % os.path.realpath(sys.argv[0]))
+        return 1
+    cur = subprocess.run(["crontab", "-l"], capture_output=True, text=True)
+    old = [] if cur.returncode else [l for l in cur.stdout.splitlines()
+                                     if marker not in l]
+    if install:
+        exe = os.path.realpath(sys.argv[0])
+        old.append("*/10 * * * * %s watch -d >/dev/null 2>&1  %s"
+                   % (exe, marker))
+    r = subprocess.run(["crontab", "-"], input="\n".join(old) + "\n",
+                       text=True, capture_output=True)
+    if r.returncode:
+        print("写入 crontab 失败：%s" % (r.stderr or "").strip())
+        return 1
+    if install:
+        print("已写入 crontab 保活：每 10 分钟确保 tf watch 在跑（重启后自动恢复）")
+        print("查看：crontab -l；移除：tf watch --uninstall")
+    else:
+        print("已移除 crontab 保活。")
+    return 0
+
+
+def _watch_cfg_sig(cfg):
+    """v1.8：配置签名——主配置 + project_roots 下全部 *.yaml/*.yml 的
+    (路径, mtime_ns, size)（result/log/隐藏目录不扫，里面没有配置）。
+    watch 每轮对比，变了自动重载配置。"""
+    sig = []
+    cp = cfg.get("_config_path")
+    if cp and os.path.isfile(cp):
+        try:
+            st = os.stat(cp)
+            sig.append((os.path.realpath(cp), st.st_mtime_ns, st.st_size))
+        except OSError:
+            pass
+    for r in (cfg.get("project_roots") or []):
+        r = os.path.realpath(os.path.expanduser(r))
+        if not os.path.isdir(r):
+            continue
+        for dp, dn, fn in os.walk(r):
+            dn[:] = [d for d in dn
+                     if d not in ("result", "log") and not d.startswith(".")]
+            for f in fn:
+                if f.endswith((".yaml", ".yml")):
+                    fp = os.path.join(dp, f)
+                    try:
+                        st = os.stat(fp)
+                    except OSError:
+                        continue
+                    sig.append((fp, st.st_mtime_ns, st.st_size))
+    sig.sort()
+    return tuple(sig)
+
+
+def cmd_watch(cfg, types, projs, exclude, interval, tt=None, root=None,
+              overrides=None):
+    """v3.15 监控模式：每 interval 秒重新采集 → auto-fetch → auto-advance。
+    v1.8：每轮检测配置文件改动（tf.yaml / project_setting/*.yaml / 各级
+    hpc.yaml），变了自动重载——改配置或换 tf 版本后不用手动重启监控。
+    状态有变化才打印总表，否则打印一行心跳。Ctrl+C 退出。"""
+    import time as _time
+    try:
+        sys.stdout.reconfigure(line_buffering=True)  # 重定向/管道时也逐行输出
+    except Exception:
+        pass
+
+    def _banner(c):
+        return ("auto-advance 开" if c.get("auto_advance") else
+                "auto-advance 关（tf.yaml 里 auto_advance: true 可开）")
+    print("监控模式：每 %d 秒刷新（auto-fetch + %s；配置改动自动重载），"
+          "Ctrl+C 退出。" % (interval, _banner(cfg)))
+    last = None
+    sig = _watch_cfg_sig(cfg)
+    try:
+        while True:
+            s2 = _watch_cfg_sig(cfg)
+            if s2 != sig:   # v1.8：配置变了 → 重载（沿用 adopt 的重载路径）
+                try:
+                    c2, _ = load_config(cfg.get("_config_path"))
+                    c2["_config_dir"] = cfg["_config_dir"]
+                    c2["_config_path"] = cfg["_config_path"]
+                    for k, v in (overrides or {}).items():
+                        c2[k] = v          # 命令行 --host/-u 覆盖照旧生效
+                    c2 = merge_project_configs(c2)
+                    t2 = get_types(c2, tt=tt, root_override=root)
+                    cfg, types = c2, t2
+                    sig = _watch_cfg_sig(cfg)   # 以重载后的新配置为准重算
+                    last = None                 # 强制重印一次总表
+                    print("[%s] 检测到配置变更，已自动重载（%s）。"
+                          % (_time.strftime("%H:%M:%S"), _banner(cfg)))
+                except (SystemExit, Exception) as e:
+                    # 新配置有误：保留旧配置继续跑，文件再改动会再试
+                    print("[%s] 配置变更但重载失败（%s），沿用旧配置继续监控。"
+                          % (_time.strftime("%H:%M:%S"), e))
+                    sig = s2
+            data = collect_data(cfg, types)
+            apply_exclude(data, exclude)
+            filter_projs(data, projs)
+            auto_fetch(cfg, data)
+            auto_advance(cfg, data)
+            if cfg.get("hide_done"):
+                apply_hide_done(data)   # v1.1：监控里同样支持隐藏完成项
+            snap = _snapshot(data)
+            if snap != last:
+                cmd_status(cfg, data, projs[0] if len(projs) == 1 else None, None)
+                last = snap
+            else:
+                print("[%s] 无变化" % _time.strftime("%H:%M:%S"))
+            _time.sleep(interval)
+    except KeyboardInterrupt:
+        print("\n已退出监控。")
+
+
+def main():
+    if any(a in ("-h", "--help") for a in sys.argv[1:]):
+        print(USAGE)
+        return
+    if any(a in ("-V", "--version") for a in sys.argv[1:]):
+        print("taskflow (tf) version %s" % TF_VERSION)
+        exe = os.path.realpath(__file__)
+        pkg = os.path.dirname(os.path.dirname(os.path.dirname(exe)))
+        if not os.path.basename(pkg).startswith("taskflow"):  # 非 versions 布局
+            pkg = os.path.dirname(exe)
+        print("程序: %s" % exe)
+        print("包根: %s（setting/ = 默认模板，skill/ = 技能脚本）" % pkg)
+        return
+    p = argparse.ArgumentParser(prog="tf")
+    p.add_argument("-tt", dest="tt")
+    p.add_argument("-p", dest="proj")
+    p.add_argument("-j", "-job", dest="job")
+    p.add_argument("-c", "--config")
+    p.add_argument("--host")
+    p.add_argument("-u", "--user")
+    p.add_argument("-x", "--exclude", dest="exclude",
+                   help="跳过指定项目（逗号分隔，全名或 basename）")
+    p.add_argument("-status", "--status", dest="status_f", metavar="ST",
+                   help="只保留含指定状态步骤的材料：done/running/pd/error/"
+                        "waiting/scancel（逗号分隔），对任意命令生效；"
+                        "如 -status scancel start 重跑全部被 stop 取消的")
+    p.add_argument("-i", "--interval", type=int, default=300,
+                   help="watch 刷新间隔秒数（默认 300）")
+    p.add_argument("-d", "--daemon", action="store_true",
+                   help="watch 放后台运行（日志 .tf_watch.log）")
+    p.add_argument("--stop", action="store_true",
+                   help="停止后台运行的 tf watch")
+    p.add_argument("--install", action="store_true",
+                   help="写入 crontab 保活（tf watch 重启后自动恢复）")
+    p.add_argument("--uninstall", action="store_true",
+                   help="移除 crontab 保活")
+    p.add_argument("-f", "--force", action="store_true")
+    p.add_argument("--all", dest="all_files", action="store_true",
+                   help="fetch 时拉回每个步骤的全部文件（不只 fetch_files 清单）")
+    p.add_argument("--hide-done", dest="hide_done", action="store_true",
+                   help="状态表隐藏全部步骤都完成的项目")
+    p.add_argument("--show-done", dest="show_done", action="store_true",
+                   help="取消 hide_done 配置的隐藏效果")
+    p.add_argument("-y", "--yes", action="store_true")
+    p.add_argument("--dry-run", dest="dry", action="store_true",
+                   help="migrate-subdir 只打印迁移计划，不执行")
+    p.add_argument("-clean", "--clean", dest="clean", action="store_true")
+    p.add_argument("args", nargs="*")
+    a, unknown = p.parse_known_args()  # v3.14：位置参数可穿插在选项中间
+    a.args = list(a.args) + unknown    # （-p A B retry / -p A B -j 1 dir）
+
+    commands = {"status", "start", "stop", "retry", "rerun", "json", "config",
+                "dir", "fetch", "init", "clean", "watch", "help", "auto",
+                "adopt", "migrate-subdir", "hpc"}
+    root, cmd, pos = None, "status", []
+    for tok in a.args:  # v3.14：位置参数先收集，之后按"材料名/目录"消歧
+        if tok == "help":
+            print(USAGE)
+            return
+        if tok in commands and cmd == "status":
+            cmd = tok
+        else:
+            pos.append(tok)
+    # 本地存在的目录 → 旧版 ROOT 语义；其余位置参数留给材料名消歧
+    mat_toks = []
+    for tok in pos:
+        if os.path.isdir(os.path.expanduser(tok)):
+            if root is not None:
+                sys.exit("错误：只能指定一个 ROOT（收到多个目录）。")
+            root = tok
+        else:
+            mat_toks.append(tok)
+
+    if cmd == "config":
+        print(EXAMPLE_CONFIG)
+        return
+    if a.job and not a.proj and not mat_toks and cmd not in (
+            "start", "stop", "retry", "rerun", "clean", "status"):
+        sys.exit("错误：-j 必须和 -p 一起用（start/stop/retry/rerun/clean "
+                 "支持不带 -p，表示对全部材料只操作该步骤）。")
+
+    cfg, cfg_path = load_config(a.config)
+    cfg["_config_dir"] = (os.path.dirname(os.path.abspath(cfg_path))
+                          if cfg_path else os.getcwd())
+    cfg["_config_path"] = cfg_path
+    cfg = merge_project_configs(cfg)   # v3.1：合并项目配置 project_setting/tf_*.yaml
+    if a.host is not None:
+        cfg["host"] = a.host or None
+    if a.user:
+        cfg["user"] = a.user
+    types = get_types(cfg, tt=a.tt,
+                      root_override=None if cmd == "init" else root)
+    if cmd != "watch":
+        _watch_ensure(cfg)   # v1.10：auto_watch 时顺带确保后台监控在跑
+    if cmd in ("status", "json") and not types and not a.tt:
+        sys.exit("错误：没有任何任务类型"
+                 "（在全局 tf.yaml 或项目 project_setting/tf_*.yaml 里定义）。")
+    # v1.1：-tt 指定的类型有骨架但无项目段时 types 为空——前面已打印引导
+    # 提示，这里放行，按空表/无目标处理（不算错误）。
+
+    if cmd == "init" and not a.job:  # 项目配置初始化：纯本地，不连超算
+        sys.exit(cmd_init(cfg, types, a.proj, tt=a.tt,
+                          name=(mat_toks[0] if mat_toks else root)))
+
+    if cmd == "auto":   # v1.5：一键开关 auto_advance（纯本地改 tf.yaml）
+        sys.exit(cmd_auto(cfg, mat_toks[0] if mat_toks else None))
+
+    if cmd == "adopt":  # v1.5：接管手工整理的技能子目录（内部自做采集）
+        sys.exit(cmd_adopt(cfg, types,
+                           a.proj or (mat_toks[0] if mat_toks else None),
+                           a.yes, a.dry, tt=a.tt))
+
+    if cmd == "hpc":    # v1.7：指定项目分配到指定超算（纯本地改 hpc.yaml）
+        sys.exit(cmd_hpc(cfg, types,
+                         [x.strip() for x in (a.proj or "").split(",")
+                          if x.strip()],
+                         mat_toks[0] if mat_toks else None, a.tt, a.yes))
+
+    # v3：含 local_root 的类型走本地发现 + 按项目超算分组采集；其余远端扫描
+    # v3.1：同 key 的多个段（项目配置）合并进同一个类型条目
+    import time as _time
+    _t0 = _time.time()
+    data = collect_data(cfg, types)
+    _dbg_t("状态采集（ssh+远端扫描）", _t0)
+
+    apply_exclude(data, a.exclude)   # v3.11：-x 跳过指定项目
+
+    incl_sc = status_spec_has_scancel(a.status_f)   # v1.4
+    if a.status_f:   # v1.4：-status 只保留含指定状态步骤的材料
+        n0 = sum(len(t["materials"]) for t in data["types"])
+        filter_status(data, a.status_f)
+        n1 = sum(len(t["materials"]) for t in data["types"])
+        print("（-status %s：%d/%d 个材料匹配）" % (a.status_f, n1, n0))
+
+    # v3.14：多项目——-p 支持逗号分隔，位置参数里的材料名自动并入
+    # v1.0：多步骤——-j 支持逗号分隔，位置参数里的步骤名/label 自动并入
+    projs = [x.strip() for x in (a.proj or "").split(",") if x.strip()]
+    jobs = [x.strip() for x in (a.job or "").split(",") if x.strip()]
+    if mat_toks:
+        names, bases, stepnames = set(), {}, set()
+        for t in data["types"]:
+            for m in t["materials"]:
+                names.add(m["name"])
+                bases.setdefault(os.path.basename(m["name"]), m["name"])
+                for s in m["steps"]:
+                    stepnames.add(s["name"])
+                    stepnames.add(s["label"])
+        for tok in mat_toks:
+            if tok in names or tok in bases:
+                projs.append(tok)
+            elif tok in stepnames:
+                jobs.append(tok)
+            else:
+                import difflib
+                close = difflib.get_close_matches(
+                    tok, sorted(names | set(bases) | stepnames | commands),
+                    n=1, cutoff=0.6)
+                sys.exit("错误：'%s' 不是命令、材料或步骤%s"
+                         % (tok, ("，你是不是想 '%s'？" % close[0]) if close else "。"))
+    jobs = jobs or [None]
+
+    if cmd == "watch":   # v3.15：监控模式（循环 采集→fetch→advance）
+        if a.install:                    # v1.10：crontab 保活（重启自动恢复）
+            sys.exit(_watch_cron(True))
+        if a.uninstall:
+            sys.exit(_watch_cron(False))
+        if a.stop:
+            sys.exit(_watch_stop(cfg))
+        if a.daemon:                     # v3.16：后台监控，不占终端
+            _watch_daemon(a, mat_toks, root, cfg)
+            return
+        _ov = {}                        # v1.8：自动重载时命令行覆盖照旧生效
+        if a.host is not None:
+            _ov["host"] = a.host or None
+        if a.user:
+            _ov["user"] = a.user
+        cmd_watch(cfg, types, projs, a.exclude, a.interval,
+                  tt=a.tt, root=root, overrides=_ov)
+        return
+
+    if a.clean or cmd == "clean":  # 删除生成物回到 PREP（留 POSCAR）
+        fails = 0
+        for pj in (projs or [None]):
+            for jb in jobs:
+                fails += 0 if cmd_clean(cfg, data, pj, jb, a.yes) == 0 else 1
+        sys.exit(0 if fails == 0 else 1)
+
+    if cmd == "init":  # -p MAT -j STEP init：只生成该步骤输入，不提交
+        if len(projs) > 1:
+            sys.exit("错误：步骤级 init 一次只支持一个材料。")
+        fails = 0
+        for jb in jobs:
+            fails += 0 if cmd_step_init(cfg, data, projs[0] if projs else None,
+                                        jb, a.force) == 0 else 1
+        sys.exit(fails)
+
+    if cmd == "status":
+        _t1 = _time.time()
+        auto_fetch(cfg, data)   # 算完的步骤自动保存到本地 result/
+        _dbg_t("auto-fetch 拉回", _t1)
+        _t1 = _time.time()
+        auto_advance(cfg, data)  # auto_advance: true 时自动提交可开始的步骤
+        _dbg_t("auto-advance 推进", _t1)
+        if a.hide_done or (cfg.get("hide_done") and not a.show_done):
+            apply_hide_done(data)   # v1.1：隐藏全部完成的项目
+        for pj in (projs or [None]):
+            for jb in jobs:
+                cmd_status(cfg, data, pj, jb)
+        if not projs:
+            new = find_uninited(cfg)   # v3.11：新材料目录自动检测（v1.2 扫 project_roots）
+            if new:
+                print("发现 %d 个新材料目录未初始化：%s"
+                      % (len(new), ", ".join(new)))
+                print("→ tf init 纳入管理；配 auto_advance: true 后下次 tf 自动开算")
+    elif cmd == "json":
+        print(json.dumps(data, ensure_ascii=False, indent=2))
+    elif cmd == "dir":
+        # 只输出路径本身，方便拼进 ssh/cd 命令：ssh jzzn "cd $(tf -p X -j 1 dir)"
+        if projs:
+            for pj in projs:
+                t, m = find_material(data, pj)
+                for jb in jobs:
+                    print(find_step(m, jb)["dir"] if jb else m["path"])
+        elif a.tt:
+            print(data["types"][0]["root"])
+        else:
+            sys.exit("错误：dir 需要 -p（可配 -j）或 -tt 指定对象。")
+    elif cmd == "migrate-subdir":
+        if not a.tt:
+            sys.exit("错误：migrate-subdir 需要 -tt 指定迁哪个技能"
+                     "（如 tf -tt band migrate-subdir）。")
+        fails = 0
+        for pj in (projs or [None]):
+            fails += cmd_migrate_subdir(cfg, data, pj, a.yes, a.dry)
+        sys.exit(0 if fails == 0 else 1)
+    else:
+        fails = 0
+        for pj in (projs or [None]):
+            for jb in jobs:
+                if cmd == "start":
+                    fails += cmd_start(cfg, data, pj, jb, a.force,
+                                       incl_scancel=incl_sc)
+                elif cmd == "stop":
+                    fails += cmd_stop(cfg, data, pj, jb, a.yes)
+                elif cmd == "retry":
+                    fails += cmd_retry(cfg, data, pj, jb, a.force,
+                                       incl_scancel=incl_sc)
+                elif cmd == "rerun":
+                    fails += cmd_rerun(cfg, data, pj, jb, a.yes, a.force)
+                elif cmd == "fetch":
+                    fails += cmd_fetch(cfg, data, pj, all_files=a.all_files)
+        if fails:
+            sys.exit(1)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+        sys.stdout.flush()
+    except BrokenPipeError:
+        devnull = os.open(os.devnull, os.O_WRONLY)
+        os.dup2(devnull, sys.stdout.fileno())
+        sys.exit(0)

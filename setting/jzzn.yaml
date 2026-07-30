@@ -1,0 +1,10 @@
+# 超算配置（创建项目时由 tf init 复制为 project_setting/hpc.yaml，按项目改）
+name: jzzn                 # 显示在状态表 hpc 列
+ssh_host: jzzn             # 该超算的 ssh 别名
+# 模板映射：gen 要的逻辑名 -> skill 目录里的实际模板文件（2D/3D 各一套，
+# 维度由 gen 脚本自动判定）。换超算 = 改这里（如 submit_hf_vaspstd_2d.tpl）
+template_map:
+  submit_std_2d.tpl: submit_jzzn_vaspstd_2d.tpl
+  submit_std_3d.tpl: submit_jzzn_vaspstd_3d.tpl
+  submit_ncl_2d.tpl: submit_jzzn_vaspncl_2d.tpl
+  submit_ncl_3d.tpl: submit_jzzn_vaspncl_3d.tpl
