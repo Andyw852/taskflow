@@ -8275,3 +8275,117 @@ Total: 5 | Done: 0 | Waiting: 0 | Actionable: 5
 +--------------+----+------+-----+---------+------------+------------+---------+------------+------------+-----------+-------------+----------+
 Total: 5 | Done: 0 | Waiting: 0 | Actionable: 5
 
+监控模式：每 300 秒刷新（auto-fetch + auto-advance 关（tf.yaml 里 auto_advance: true 可开）；配置改动自动重载），Ctrl+C 退出。
+== band（能带计算，5 个材料）==
++--------------+------+------+-----+----------+-----------+------------+-------------+---------+-------------+
+| Material     | tt   | hpc  | dim | S1_relax | S2_static | S3_WAVECAR | S3.1_plot   | S4_HSE  | S4.1_plot   |
++==============+======+======+=====+==========+===========+============+=============+=========+=============+
+| C20/qHPC20   | band | jzzn | -   | waiting  | waiting   | waiting    | not started | waiting | not started |
+|              |      |      |     | S1a_ion  | -         | -          | -           | -       | -           |
+| C20/qTPC20-b | band | jzzn | -   | waiting  | waiting   | waiting    | not started | waiting | not started |
+|              |      |      |     | S1a_ion  | -         | -          | -           | -       | -           |
+| C20/qTPC20-r | band | jzzn | -   | waiting  | waiting   | waiting    | not started | waiting | not started |
+|              |      |      |     | S1a_ion  | -         | -          | -           | -       | -           |
+| Mg2C60       | band | jzzn | 3D  | waiting  | waiting   | waiting    | not started | waiting | not started |
+|              |      |      |     | S1a_ion  | -         | -          | -           | -       | -           |
+| qTPC24-Mg1   | band | jzzn | -   | waiting  | waiting   | waiting    | not started | waiting | not started |
+|              |      |      |     | S1a_ion  | -         | -          | -           | -       | -           |
++--------------+------+------+-----+----------+-----------+------------+-------------+---------+-------------+
+Total: 5 | Done: 0 | Waiting: 0 | Actionable: 5
+
+== ke（能带计算，5 个材料）==
++--------------+----+------+-----+---------+------------+------------+---------+------------+------------+-----------+-------------+----------+
+| Material     | tt | hpc  | dim | S1_opt  | S2_bandgap | S3_uniform | S4_wave | S5_dielect | S6_elastic | S7_deform | S7.1_read   | S8_kappa |
++==============+====+======+=====+=========+============+============+=========+============+============+===========+=============+==========+
+| C20/qHPC20   | ke | jzzn | -   | waiting | waiting    | waiting    | waiting | waiting    | waiting    | waiting   | not started | waiting  |
+|              |    |      |     | -       | S2.1_scf   | -          | -       | -          | -          | -         | -           | -        |
+| C20/qTPC20-b | ke | jzzn | -   | waiting | waiting    | waiting    | waiting | waiting    | waiting    | waiting   | not started | waiting  |
+|              |    |      |     | -       | S2.1_scf   | -          | -       | -          | -          | -         | -           | -        |
+| C20/qTPC20-r | ke | jzzn | -   | waiting | waiting    | waiting    | waiting | waiting    | waiting    | waiting   | not started | waiting  |
+|              |    |      |     | -       | S2.1_scf   | -          | -       | -          | -          | -         | -           | -        |
+| Mg2C60       | ke | jzzn | 3D  | waiting | waiting    | waiting    | waiting | waiting    | waiting    | waiting   | not started | waiting  |
+|              |    |      |     | -       | S2.1_scf   | -          | -       | -          | -          | -         | -           | -        |
+| qTPC24-Mg1   | ke | jzzn | -   | waiting | waiting    | waiting    | waiting | waiting    | waiting    | waiting   | not started | waiting  |
+|              |    |      |     | -       | S2.1_scf   | -          | -       | -          | -          | -         | -           | -        |
++--------------+----+------+-----+---------+------------+------------+---------+------------+------------+-----------+-------------+----------+
+Total: 5 | Done: 0 | Waiting: 0 | Actionable: 5
+
+[19:55:42] 配置变更但重载失败（错误：类型 band 在全局 tf.yaml 里没有对应定义（继承不到 steps）。
+来源文件：/home/wangchao/Fullerene_Network/Mg2C60/band/project_setting/tf_Mg2C60_band.yaml
+通常是该文件的类型名和全局 tf.yaml 不一致（如 bd 改名 band 后没同步）。
+全局可用的类型名：（无）。修正命令：
+  sed -i 's/^  band:/  band:/' /home/wangchao/Fullerene_Network/Mg2C60/band/project_setting/tf_Mg2C60_band.yaml），沿用旧配置继续监控。
+== band（能带计算，2 个材料）==
++------------+------+------+-----+----------+-----------+------------+-------------+---------+-------------+
+| Material   | tt   | hpc  | dim | S1_relax | S2_static | S3_WAVECAR | S3.1_plot   | S4_HSE  | S4.1_plot   |
++============+======+======+=====+==========+===========+============+=============+=========+=============+
+| C20/qHPC20 | band | jzzn | -   | waiting  | waiting   | waiting    | not started | waiting | not started |
+|            |      |      |     | S1a_ion  | -         | -          | -           | -       | -           |
+| Mg2C60     | band | jzzn | 3D  | waiting  | waiting   | waiting    | not started | waiting | not started |
+|            |      |      |     | S1a_ion  | -         | -          | -           | -       | -           |
++------------+------+------+-----+----------+-----------+------------+-------------+---------+-------------+
+Total: 2 | Done: 0 | Waiting: 0 | Actionable: 2
+
+== ke（能带计算，2 个材料）==
++------------+----+------+-----+---------+------------+------------+---------+------------+------------+-----------+-------------+----------+
+| Material   | tt | hpc  | dim | S1_opt  | S2_bandgap | S3_uniform | S4_wave | S5_dielect | S6_elastic | S7_deform | S7.1_read   | S8_kappa |
++============+====+======+=====+=========+============+============+=========+============+============+===========+=============+==========+
+| C20/qHPC20 | ke | jzzn | -   | waiting | waiting    | waiting    | waiting | waiting    | waiting    | waiting   | not started | waiting  |
+|            |    |      |     | -       | S2.1_scf   | -          | -       | -          | -          | -         | -           | -        |
+| Mg2C60     | ke | jzzn | 3D  | waiting | waiting    | waiting    | waiting | waiting    | waiting    | waiting   | not started | waiting  |
+|            |    |      |     | -       | S2.1_scf   | -          | -       | -          | -          | -         | -           | -        |
++------------+----+------+-----+---------+------------+------------+---------+------------+------------+-----------+-------------+----------+
+Total: 2 | Done: 0 | Waiting: 0 | Actionable: 2
+
+[20:01:23] 配置变更但重载失败（错误：类型 band 在全局 tf.yaml 里没有对应定义（继承不到 steps）。
+来源文件：/home/wangchao/Fullerene_Network/Mg2C60/band/project_setting/tf_Mg2C60_band.yaml
+通常是该文件的类型名和全局 tf.yaml 不一致（如 bd 改名 band 后没同步）。
+全局可用的类型名：（无）。修正命令：
+  sed -i 's/^  band:/  band:/' /home/wangchao/Fullerene_Network/Mg2C60/band/project_setting/tf_Mg2C60_band.yaml），沿用旧配置继续监控。
+== band（能带计算，3 个材料）==
++------------+------+------+-----+----------+-----------+------------+-------------+---------+-------------+
+| Material   | tt   | hpc  | dim | S1_relax | S2_static | S3_WAVECAR | S3.1_plot   | S4_HSE  | S4.1_plot   |
++============+======+======+=====+==========+===========+============+=============+=========+=============+
+| C20/qHPC20 | band | jzzn | -   | waiting  | waiting   | waiting    | not started | waiting | not started |
+|            |      |      |     | S1a_ion  | -         | -          | -           | -       | -           |
+| Mg2C60     | band | jzzn | 3D  | waiting  | waiting   | waiting    | not started | waiting | not started |
+|            |      |      |     | S1a_ion  | -         | -          | -           | -       | -           |
+| Mo2S3      | band | jzzn | -   | waiting  | waiting   | waiting    | not started | waiting | not started |
+|            |      |      |     | S1a_ion  | -         | -          | -           | -       | -           |
++------------+------+------+-----+----------+-----------+------------+-------------+---------+-------------+
+Total: 3 | Done: 0 | Waiting: 0 | Actionable: 3
+
+== ke（能带计算，3 个材料）==
++------------+----+------+-----+---------+------------+------------+---------+------------+------------+-----------+-------------+----------+
+| Material   | tt | hpc  | dim | S1_opt  | S2_bandgap | S3_uniform | S4_wave | S5_dielect | S6_elastic | S7_deform | S7.1_read   | S8_kappa |
++============+====+======+=====+=========+============+============+=========+============+============+===========+=============+==========+
+| C20/qHPC20 | ke | jzzn | -   | waiting | waiting    | waiting    | waiting | waiting    | waiting    | waiting   | not started | waiting  |
+|            |    |      |     | -       | S2.1_scf   | -          | -       | -          | -          | -         | -           | -        |
+| Mg2C60     | ke | jzzn | 3D  | waiting | waiting    | waiting    | waiting | waiting    | waiting    | waiting   | not started | waiting  |
+|            |    |      |     | -       | S2.1_scf   | -          | -       | -          | -          | -         | -           | -        |
+| Mo2S3      | ke | jzzn | -   | waiting | waiting    | waiting    | waiting | waiting    | waiting    | waiting   | not started | waiting  |
+|            |    |      |     | -       | S2.1_scf   | -          | -       | -          | -          | -         | -           | -        |
++------------+----+------+-----+---------+------------+------------+---------+------------+------------+-----------+-------------+----------+
+Total: 3 | Done: 0 | Waiting: 0 | Actionable: 3
+
+[20:07:17] 无变化
+[20:12:53] 配置变更但重载失败（错误：类型 band 在全局 tf.yaml 里没有对应定义（继承不到 steps）。
+来源文件：/home/wangchao/Fullerene_Network/Mg2C60/band/project_setting/tf_Mg2C60_band.yaml
+通常是该文件的类型名和全局 tf.yaml 不一致（如 bd 改名 band 后没同步）。
+全局可用的类型名：（无）。修正命令：
+  sed -i 's/^  band:/  band:/' /home/wangchao/Fullerene_Network/Mg2C60/band/project_setting/tf_Mg2C60_band.yaml），沿用旧配置继续监控。
+[20:12:56] 无变化
+[20:18:28] 配置变更但重载失败（错误：类型 band 在全局 tf.yaml 里没有对应定义（继承不到 steps）。
+来源文件：/home/wangchao/Fullerene_Network/Mg2C60/band/project_setting/tf_Mg2C60_band.yaml
+通常是该文件的类型名和全局 tf.yaml 不一致（如 bd 改名 band 后没同步）。
+全局可用的类型名：（无）。修正命令：
+  sed -i 's/^  band:/  band:/' /home/wangchao/Fullerene_Network/Mg2C60/band/project_setting/tf_Mg2C60_band.yaml），沿用旧配置继续监控。
+[20:18:36] 无变化
+[20:24:12] 配置变更但重载失败（错误：类型 band 在全局 tf.yaml 里没有对应定义（继承不到 steps）。
+来源文件：/home/wangchao/Fullerene_Network/Mg2C60/band/project_setting/tf_Mg2C60_band.yaml
+通常是该文件的类型名和全局 tf.yaml 不一致（如 bd 改名 band 后没同步）。
+全局可用的类型名：（无）。修正命令：
+  sed -i 's/^  band:/  band:/' /home/wangchao/Fullerene_Network/Mg2C60/band/project_setting/tf_Mg2C60_band.yaml），沿用旧配置继续监控。
+[20:24:21] 无变化
+[20:29:53] 检测到配置变更，已自动重载（auto-advance 关（tf.yaml 里 auto_advance: true 可开））。
+没有找到任何材料目录。

@@ -1242,7 +1242,7 @@ def _filter_run_steps(t):
     t["steps"] = kept
 
 
-def get_types(cfg, tt=None, root_override=None, quiet=False):
+def get_types(cfg, tt=None, root_override=None):
     """把配置归一化成类型列表；应用 -tt 过滤和 ROOT 覆盖。
     项目配置合并进来的同 key 段在此展开为多个类型实例（key 相同，local_root 不同）。"""
     raw = cfg.get("task_types")
@@ -1278,7 +1278,7 @@ def get_types(cfg, tt=None, root_override=None, quiet=False):
             sys.exit("错误：没有任务类型 '%s'（已定义：%s）。"
                      % (tt, ", ".join(all_keys)))
         types = [t for t in types if t["key"] == tt]
-        if not types and not quiet:   # init 时这条是废话（正要去生成），不打
+        if not types:
             print("（%s：类型已在全局 tf.yaml 定义，但还没有项目挂这个类型。\n"
                   "  在材料的 project_setting/tf_<项目名>.yaml 里加一段  %s:  ，\n"
                   "  或用  tf -tt %s -p <材料> init  生成项目配置。）" % (tt, tt, tt))
@@ -2401,17 +2401,11 @@ def _dim_mod(cfg, t):
     return mod
 
 
-def fill_local_dim(cfg, data, types=None):
+def fill_local_dim(cfg, data):
     """v1.9.5：dim 原本只来自远端 workflow_method.txt，也就是 gen 跑过才有。
     还没 gen 的材料改用本地 POSCAR 现算一个，结果加 * 表示是预判值
     （gen 会先做原胞化/标准化，最终以 workflow_method.txt 为准）。"""
-    # 采集结果里的 type 只有 key/desc/root/materials，local_root 和 skill_dir
-    # 得从原始 types（get_types 的返回）里按 key 取回来。
-    tmap = {}
-    for t0 in (types or []):
-        tmap.setdefault(t0.get("key"), t0)
-    for td in data.get("types") or []:
-        t = tmap.get(td.get("key")) or td
+    for t in data.get("types") or []:
         mats, mod = {}, None
         if t.get("local_root"):
             try:
@@ -2419,7 +2413,7 @@ def fill_local_dim(cfg, data, types=None):
                 mats = {m0["name"]: m0.get("lpath") for m0 in ms}
             except Exception:
                 mats = {}
-        for m in td.get("materials") or []:
+        for m in t.get("materials") or []:
             if m.get("dim") or not mats.get(m.get("name")):
                 continue
             pos = os.path.join(mats[m["name"]], "POSCAR")
@@ -3491,13 +3485,14 @@ def cmd_init(cfg, types, proj, name=None, tt=None, force=False, yes=False):
     if not _keys:
         print("错误：tf.yaml 里没有定义任何技能（task_types 为空）。")
         return 1
-    if not yes and not tt:   # 明确指定了 -tt 就是明确选择，不再确认
+    if not yes:
         print("tf init 将为下列技能各建一套项目配置：%s" % "、".join(_keys))
         print("范围：%s" % (("材料 " + proj) if proj else
                            "当前目录下所有材料（%s）" % os.getcwd()))
         print("init 只在本地生成配置和模板，不连超算、不提交任何计算；")
         print("要开算是之后的 tf start。已存在的文件不覆盖（除非加 -f）。")
-        print("（只想初始化其中一个技能就加 -tt，如 tf -tt band init）")
+        if not tt:
+            print("（只想初始化其中一个技能就加 -tt，如 tf -tt band init）")
         try:
             ans = input("继续？ [y/N] ").strip().lower()
         except EOFError:
@@ -3585,42 +3580,11 @@ def skill_keys(cfg, tt=None):
     return [k for k in (cfg.get("task_types") or {}) if k]
 
 
-def _init_one(cfg, types, target, name=None, tt=None, force=False, brief=None):
-    """给 target 材料目录初始化【全部技能】（或 -tt 指定的那一个）。
-    brief=None 时自动判断：一次建多个技能就每个技能只打一行摘要，避免刷屏。"""
-    import contextlib as _ctx
-    import io as _io
-    keys = skill_keys(cfg, tt)
-    if brief is None:
-        brief = len(keys) > 1
+def _init_one(cfg, types, target, name=None, tt=None, force=False):
+    """给 target 材料目录初始化【全部技能】（或 -tt 指定的那一个）。"""
     fails = 0
-    for k in keys:
-        if not brief:
-            fails += _init_one_skill(cfg, types, target, name, tt=k, force=force)
-            continue
-        buf = _io.StringIO()
-        with _ctx.redirect_stdout(buf):
-            rc = _init_one_skill(cfg, types, target, name, tt=k, force=force)
-        fails += rc
-        out = buf.getvalue()
-        n_new = out.count("已生成 ")
-        n_skip = out.count("已存在，跳过")
-        mt = re.search(r"已(?:复制|覆盖) (\d+) 个模板/配置", out)
-        if n_new:
-            msg = "新建 %d 个配置" % n_new
-        elif n_skip:
-            msg = "已存在，未改动"
-        else:
-            msg = "就绪"
-        if mt:
-            msg += "，模板 %s 个" % mt.group(1)
-        print("  %-9s %s" % (k, msg))
-        for ln in out.splitlines():      # 错误和需要人工处理的提示照常显示
-            if ln.startswith(("错误", "提示：skill_dir")):
-                print("    " + ln)
-    if brief:
-        print("  → 配置在 %s/<技能>/project_setting/（改这里只影响本材料）"
-              % os.path.basename(os.path.abspath(target)))
+    for k in skill_keys(cfg, tt):
+        fails += _init_one_skill(cfg, types, target, name, tt=k, force=force)
     return fails
 
 
@@ -4743,7 +4707,7 @@ def cmd_watch(cfg, types, projs, exclude, interval, tt=None, root=None,
                           % (_time.strftime("%H:%M:%S"), e))
                     sig = s2
             data = collect_data(cfg, types)
-            fill_local_dim(cfg, data, types)
+            fill_local_dim(cfg, data)
             apply_exclude(data, exclude)
             filter_projs(data, projs)
             auto_fetch(cfg, data)
@@ -4860,8 +4824,7 @@ def main():
     if a.user:
         cfg["user"] = a.user
     types = get_types(cfg, tt=a.tt,
-                      root_override=None if cmd == "init" else root,
-                      quiet=(cmd == "init"))
+                      root_override=None if cmd == "init" else root)
     if cmd != "watch":
         _watch_ensure(cfg)   # v1.10：auto_watch 时顺带确保后台监控在跑
     if cmd in ("status", "json") and not types and not a.tt:
@@ -4894,7 +4857,7 @@ def main():
     import time as _time
     _t0 = _time.time()
     data = collect_data(cfg, types)
-    fill_local_dim(cfg, data, types)
+    fill_local_dim(cfg, data)
     _dbg_t("状态采集（ssh+远端扫描）", _t0)
 
     apply_exclude(data, a.exclude)   # v3.11：-x 跳过指定项目
