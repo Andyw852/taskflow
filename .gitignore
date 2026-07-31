@@ -2,3 +2,5 @@ setting/
 __pycache__/
 *.pyc
 .DS_Store
+versions/v1.0/tf.bak_*
+setting/.tf_watch.log
