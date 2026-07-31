@@ -1068,6 +1068,23 @@ def expand_optional_steps(t):
     t["steps"] = steps
 
 
+def _seq_key(v):
+    """把 seq / -j token 归一成可比较的数：'2'->2.0，'2.1'->2.1，非数->None。"""
+    if v is None:
+        return None
+    try:
+        return float(str(v).strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def _name_seq(name):
+    """从步骤名抽序号：step2 -> 2.0，step2.1_static -> 2.1，step1a_opt -> 1.0。
+    抓 'step' 后面的数字（可带一位小数），字母后缀（a/b/c）忽略。"""
+    m = re.match(r"step(\d+(?:\.\d+)?)", str(name or ""))
+    return float(m.group(1)) if m else None
+
+
 def step_seq(s):
     """步骤序号：优先清单里的 seq，缺省从 stepN 名字推。"""
     if s.get("seq") is not None:
@@ -1171,6 +1188,11 @@ def merge_project_configs(cfg):
                 # 材料级 project_setting（qHPC20/project_setting）：
                 # 缺省 local_root = 上一级（材料名 = 目录名，如 qHPC20）
                 seg["local_root"] = os.path.dirname(proj_dir)
+            elif os.path.isfile(os.path.join(os.path.dirname(proj_dir), "POSCAR")):
+                # v1.7：技能子目录级 project_setting（Mg2C60/band/project_setting）：
+                # proj_dir(=Mg2C60/band) 不是材料，其父(=Mg2C60)才是材料 →
+                # local_root = 材料的父目录，材料才能被发现。
+                seg["local_root"] = os.path.dirname(os.path.dirname(proj_dir))
             else:
                 # 项目/体系级（C20/project_setting）：缺省 local_root = 父目录
                 seg["local_root"] = proj_dir
@@ -1197,13 +1219,14 @@ def _filter_run_steps(t):
         ts = str(tok).strip()
         if ts == str(s.get("name", "")) or ts == str(s.get("label", "")):
             return True
-        sq = step_seq(s)           # v1.2：序号来自清单的 seq，不再认 band_plot
+        # v1.8：seq 优先，其次名字里的点号序号；点号精确比较，不做前缀近似
+        want = _seq_key(ts)
+        if want is None:
+            return False
+        sq = _seq_key(step_seq(s))
         if sq is None:
-            return False
-        try:
-            return float(ts) == float(sq)
-        except ValueError:
-            return False
+            sq = _name_seq(s.get("name"))
+        return sq is not None and abs(sq - want) < 1e-9
 
     kept, kept_ids = [], set()
     for tok in toks:
@@ -1332,17 +1355,35 @@ def discover_local(local_root):
 _PS_CACHE = {}
 
 
-def find_ps_dir(matdir, rootstop):
-    """从材料目录向上找最近的 project_setting/（就近优先），找不到返回 None。"""
-    d = os.path.realpath(matdir)
+def find_ps_dir(matdir, rootstop, subdir=None):
+    """找最近的 project_setting/。优先级（v1.7 自包含布局）：
+      1) <matdir>/<subdir>/project_setting —— 指定技能子目录时最优先
+         （band/project_setting、elastic/project_setting 各自独立）；
+      2) <matdir>/project_setting 起向上到 rootstop —— 老的就近向上
+         （材料级 / 体系级共享配置，向后兼容）；
+      3) 未指定 subdir（如孤儿检查，无技能上下文）时，兜底扫
+         <matdir>/*/project_setting，任一技能子目录有即算已初始化。
+    找不到返回 None。"""
+    import glob as _glob
+    d0 = os.path.realpath(matdir)
     rootstop = os.path.realpath(rootstop)
+    if subdir:   # v1.7：技能级 project_setting 最优先
+        cand = os.path.join(d0, str(subdir), "project_setting")
+        if os.path.isdir(cand):
+            return cand
+    d = d0
     while True:
         cand = os.path.join(d, "project_setting")
         if os.path.isdir(cand):
             return cand
         if d == rootstop or not d.startswith(rootstop):
-            return None
+            break
         d = os.path.dirname(d)
+    if not subdir:   # v1.7：无技能上下文时，任一技能子目录的 project_setting 都算数
+        for h in sorted(_glob.glob(os.path.join(d0, "*", "project_setting"))):
+            if os.path.isdir(h):
+                return h
+    return None
 
 
 def _load_yaml_file(path):
@@ -1376,7 +1417,10 @@ def pkg_setting_path(name):
 
 def resolve_material_local(t, root, m):
     """给本地发现的材料补齐：project_setting、hpc、路径、远端目录、有效 host。"""
-    ps = load_project_settings(find_ps_dir(m["lpath"], root))
+    # v1.1：skill_subdir 子目录名（band/elastic…）。v1.7：先算出来，find_ps_dir
+    # 要用它定位技能级 project_setting（材料/<技能>/project_setting）。
+    _subdir = (str(t.get("dir_name") or t["key"]) if t.get("skill_subdir") else None)
+    ps = load_project_settings(find_ps_dir(m["lpath"], root, _subdir))
     st, hpc = ps["setting"], ps["hpc"]
     # 项目没有 hpc.yaml（或字段缺失）时回退到类型 hpc 配置：
     # v1.0 起 hpc 可写内联字典（把 setting/jzzn.yaml 的内容直接写进 tf.yaml），
@@ -1399,8 +1443,7 @@ def resolve_material_local(t, root, m):
     # v1.1：skill_subdir——材料目录下按技能建子目录（如 elastic/、band/）。
     # 远端步骤目录 = work_dir/材料/<subdir>/stepN；本地 result = 材料/<subdir>/result。
     # 子目录名 dir_name 缺省 = 类型 key。老项目平铺结构不开此开关即可。
-    m["_subdir"] = (str(t.get("dir_name") or t["key"])
-                    if t.get("skill_subdir") else None)
+    m["_subdir"] = _subdir
     m["_skill_dir_local"] = (os.path.join(m["lpath"], m["_subdir"])
                              if m["_subdir"] else None)
     # v1.6：技能子目录里可放私有 hpc.yaml——同一材料的不同技能跑不同超算。
@@ -2064,10 +2107,33 @@ def find_material(data, name):
 
 
 def _step_seq_match(s, n):
-    """v1.7：数字 = 逻辑步骤号（stepN 前缀，band_plot 除外）。
-    三段式弛豫时 1 指首段 step1a（b/c 段用 label 指，如 S1b_cell）。"""
+    """v1.8：整数 -j N 匹配逻辑步骤号 N。
+    - seq 恰为 N（整数）→ 命中；
+    - 名字 stepN 开头，但**排除 stepN.M 子步**（step2 命中，step2.1 不命中）；
+    - band_plot 画图步除外（历史行为）。
+    带点号的子步用 -j N.M 或 label 指定，不会被整数 N 顺带选上。"""
     nm = str(s.get("name", ""))
-    return nm.startswith("step%d" % n) and "band_plot" not in nm
+    if "band_plot" in nm:
+        return False
+    sk = _seq_key(s.get("seq"))
+    if sk is not None and abs(sk - n) < 1e-9:
+        return True
+    # 名字前缀：stepN 后面不能紧跟小数点（否则是 stepN.M 子步）
+    return bool(re.match(r"step%d(?!\.\d)" % n, nm))
+
+
+def _find_by_dotted(steps, jname):
+    """v1.8：-j 2.1 这类点号 token，按 seq / 名字序号精确匹配。命中返回步骤，否则 None。"""
+    want = _seq_key(jname)
+    if want is None:
+        return None
+    for s in steps:
+        sq = _seq_key(step_seq(s))
+        if sq is None:
+            sq = _name_seq(s.get("name"))
+        if sq is not None and abs(sq - want) < 1e-9:
+            return s
+    return None
 
 
 def find_step(m, jname):
@@ -2082,6 +2148,9 @@ def find_step(m, jname):
     for s in steps:
         if s["name"] == jname or s["label"] == jname:
             return s
+    _d = _find_by_dotted(steps, jname)      # v1.8：-j 2.1 点号序号
+    if _d is not None:
+        return _d
     sys.exit("错误：%s 没有步骤 '%s'（现有：%s）。"
              % (m["name"], jname,
                 ", ".join("%s|%s" % (s["label"], s["name"]) for s in steps)))
@@ -2153,14 +2222,21 @@ def find_asset(cfg, t, m, fname, sname=None):
     ps = (m.get("ps") or {}).get("dir")
     real = (m.get("template_map") or {}).get(fname)
     sld = m.get("_skill_dir_local")
+    tdir = (m.get("template_subdir") or "templates")   # v1.7：项目内模板子文件夹名
     if sld:   # v1.6：技能子目录私有模板/依赖最优先（按技能定制）
         cands.append(os.path.join(sld, fname))
         if real:
             cands.append(os.path.join(sld, real))
+        cands.append(os.path.join(sld, tdir, fname))   # v1.7：材料/<技能>/templates/
+        if real:
+            cands.append(os.path.join(sld, tdir, real))
     if ps:
         cands.append(os.path.join(ps, fname))
         if real:
             cands.append(os.path.join(ps, real))
+        cands.append(os.path.join(ps, tdir, fname))    # v1.7：project_setting/templates/
+        if real:
+            cands.append(os.path.join(ps, tdir, real))
     seg = (m.get("_seg") or {})
     sd = seg.get("skill_dir") or t.get("skill_dir")
     sdirs = []
@@ -2722,7 +2798,7 @@ def find_step_soft(m, jname):
     for s in steps:
         if s["name"] == jname or s["label"] == jname:
             return s
-    return None
+    return _find_by_dotted(steps, jname)    # v1.8：-j 2.1 点号序号
 
 
 def step_targets(data, jname):
@@ -2995,8 +3071,12 @@ def cmd_clean(cfg, data, proj, job, yes):
         # 此前 tf -tt elastic clean 把整目录删掉，band 段跟着丢、band 瘫痪。
         ps = (m.get("ps") or {}).get("dir")
         lp = m.get("lpath")
-        own_ps = (ps and lp and os.path.isdir(ps) and os.path.dirname(
-            os.path.realpath(ps)) == os.path.realpath(lp))
+        _psr = os.path.realpath(ps) if ps else None
+        # v1.7：材料自己的 project_setting 既可能在材料级（dirname == 材料目录），
+        # 也可能在技能子目录级（dirname(dirname) == 材料目录，如 Mg2C60/band/project_setting）。
+        own_ps = bool(ps and lp and os.path.isdir(ps) and (
+            os.path.dirname(_psr) == os.path.realpath(lp) or
+            os.path.dirname(os.path.dirname(_psr)) == os.path.realpath(lp)))
         kept_note = ""
         if own_ps:
             f0s = glob.glob(os.path.join(ps, "tf_*.yaml"))
@@ -3258,10 +3338,18 @@ def _init_one(cfg, types, target, name=None, tt=None):
     if t is None and cands:
         t = cands[0]
         tkey = tkey or t.get("key")
-    ps = os.path.join(target, "project_setting")
+    # v1.7：开 skill_subdir 时 project_setting 进技能子目录
+    # （材料/<技能>/project_setting），每技能一套、完全自包含；
+    # 配置名带技能后缀保证全局唯一（scan_project_configs 要求名字唯一）。
+    _sub = (str((t or {}).get("dir_name") or tkey)
+            if (t and t.get("skill_subdir")) else None)
+    ps = (os.path.join(target, _sub, "project_setting") if _sub
+          else os.path.join(target, "project_setting"))
     os.makedirs(ps, exist_ok=True)
     # 项目配置 tf_<项目名>.yaml（命名全局唯一，禁止重复）
     pname = name or re.sub(r"\W+", "_", os.path.basename(os.path.abspath(target)))
+    if _sub and tkey and not pname.endswith("_" + str(tkey)):
+        pname = "%s_%s" % (pname, tkey)   # v1.7：技能级配置名带技能后缀
     f0 = os.path.join(ps, "tf_%s.yaml" % pname)
     if os.path.exists(f0):
         # v1.2：配置已存在且带了 -tt——缺该类型段就追加（已有项目挂新技能，
@@ -3353,11 +3441,17 @@ def _init_one(cfg, types, target, name=None, tt=None):
     # v1.3：只复制该技能实际引用的模板——步骤级 gen_need 都声明了的技能
     # （如 elastic 全程 std），按步骤清单并集复制；没声明的沿用全量（band）。
     # 否则 elastic init 会对用不到的 ncl 模板报"请手动放入"误导用户
+    # v1.7：shared 布局改由下方"整套 templates/"复制统一负责，这里的平铺复制
+    # 只在 per_step（无 templates/ 子文件夹）时才需要，避免 project_setting 根下
+    # 与 templates/ 里重复放一份 submit_*。
     _need = set()
     for _sc in ((t or {}).get("steps") or []):
         _need.update(_sc.get("gen_need") or [])
     _tmpl_need = {x for x in _need if str(x).endswith(".tpl")} or None
-    for logical, real in (hpc_cfg.get("template_map") or {}).items():
+    _shared_full = (str((t or {}).get("template_layout") or "shared").lower()
+                    != "per_step") and bool(sd)
+    for logical, real in ((hpc_cfg.get("template_map") or {}).items()
+                          if not _shared_full else []):
         if _tmpl_need is not None and logical not in _tmpl_need:
             continue
         dst = os.path.join(ps, real)
@@ -3381,6 +3475,30 @@ def _init_one(cfg, types, target, name=None, tt=None):
             print("已复制模板 %s" % dst)
         else:
             print("提示：skill_dir 里找不到 %s，请手动放入 %s" % (real, dst))
+    # v1.7：把技能的整套 templates/（含 incar_*.tpl，template_map 未覆盖的也一并）
+    # 复制进项目的 templates/ 子文件夹——按项目/材料手改只动这里，不影响其它材料。
+    # 目的地：开 skill_subdir 时进 材料/<技能>/templates/，否则 project_setting/templates/。
+    # find_asset 会优先读这里（v1.7 查找链已含 <技能>/templates 与 ps/templates）。
+    _layout_all = str((t or {}).get("template_layout") or "shared").lower()
+    if _layout_all != "per_step" and sd:
+        _tdst = os.path.join(ps, "templates")   # v1.7：始终放 project_setting/templates/
+        os.makedirs(_tdst, exist_ok=True)
+        _copied = 0
+        for _srcdir in _skill_asset_dirs(t or {}, {}, sd):
+            if not os.path.isdir(_srcdir):
+                continue
+            for _fn in sorted(os.listdir(_srcdir)):
+                if not _fn.endswith(".tpl"):
+                    continue
+                _s = os.path.join(_srcdir, _fn)
+                _d = os.path.join(_tdst, _fn)
+                if os.path.isfile(_s) and not os.path.exists(_d):
+                    shutil.copyfile(_s, _d)
+                    _copied += 1
+        if _copied:
+            print("已复制 %d 个模板 → %s/（改这里的参数只影响本项目/材料）" % (_copied, _tdst))
+        else:
+            print("templates 子文件夹就绪：%s/（模板已存在，未覆盖）" % _tdst)
     # v1.2：技能开 skill_subdir 时本地建技能子目录（本地镜像超算结构：
     # 材料/<技能>/{result,log} ↔ 超算 work/材料/<技能>/stepN）
     if (t or {}).get("skill_subdir"):

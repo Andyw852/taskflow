@@ -1,0 +1,72 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""gen_step5_uniform.py —— AMSET uniform 密网格自洽（step5_uniform）。
+
+在材料目录下运行，从结构优化结果接力：
+  1. POSCAR ← step1_std_opt/CONTCAR
+  2. VASPKIT 生成密 KPOINTS（kspacing 见下）+ POTCAR
+  3. 按 2D/3D 渲染 incar_uniform_*.tpl，产出 WAVECAR 供 amset wave
+产出目录：step5_uniform/
+"""
+import os
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import ke_common as kc
+
+# =========================== 可改参数区 ===========================
+OUTDIR_NAME  = "step5_uniform"
+PREV_CANDS   = ["step1_std_opt"]      # 结构来源（找第一个有 CONTCAR 的）
+DIMENSION    = "auto"                 # auto | 2d | 3d
+VASPKIT_EXE  = "vaspkit"
+KSCHEME      = "2"                    # 2 = Γ 心
+KSPACING     = "0.03"                 # ★AMSET 密网格；要更密改这里
+FUNC         = "pbe"                  # pbe | pbesol | pbe-d3
+MANUAL_ENCUT = None                   # None=从 POTCAR 自动；或写数值
+ENCUT_FACTOR = 1.5
+STEP_LABEL   = "S3_uniform"
+# =================================================================
+
+GGA_MAP = {"pbe": "PE", "pbesol": "PS", "pbe-d3": "PE"}
+
+
+def main():
+    cwd = Path.cwd()
+    out = cwd / OUTDIR_NAME
+    out.mkdir(exist_ok=True)
+
+    prev = kc.find_prev_dir(cwd, PREV_CANDS)
+    if prev is None:
+        sys.exit("[ERROR] 找不到含 CONTCAR 的上一步目录：%s" % PREV_CANDS)
+    kc.relay_poscar(prev / "CONTCAR", out / "POSCAR", "step1_std_opt")
+
+    dim = kc.read_method_dim(prev / kc.METHOD_FILE)
+    if dim is None:
+        dim, vac_axis = kc.resolve_dim_for(out / "POSCAR", DIMENSION)
+    else:
+        _, vac_axis = kc.resolve_dim_for(out / "POSCAR", dim)
+    print("[..] 维度：%s" % dim.upper())
+    kc.write_method(out / kc.METHOD_FILE, dim, "uniform 密网格自洽")
+
+    kc.vaspkit_kpoints(out, KSCHEME, KSPACING, VASPKIT_EXE, dim, vac_axis)
+    kc.vaspkit_potcar(out, VASPKIT_EXE)
+
+    encut = MANUAL_ENCUT or kc.encut_from_potcar(out / "POTCAR", ENCUT_FACTOR)
+    tpl = Path(__file__).resolve().parent / ("incar_uniform_%s.tpl" % dim)
+    if not tpl.is_file():
+        sys.exit("[ERROR] 找不到模板 %s" % tpl.name)
+    system = cwd.name + " uniform"
+    kc.render_tpl(tpl, {"SYSTEM": system, "ENCUT": encut, "GGA": GGA_MAP[FUNC]},
+                  out / "INCAR")
+
+    submit = out / "submit.sh"
+    if not submit.is_file():
+        sys.exit("[ERROR] submit.sh 未推送到 %s（检查 gen_need 里的 submit 模板）" % out)
+    kc.patch_submit_jobname(submit, kc.new_jobname(cwd, STEP_LABEL))
+
+    print("[DONE] %s：INCAR/KPOINTS/POTCAR/POSCAR 就绪，可提交" % OUTDIR_NAME)
+
+
+if __name__ == "__main__":
+    main()

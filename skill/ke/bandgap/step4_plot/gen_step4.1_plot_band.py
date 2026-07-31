@@ -57,8 +57,8 @@ from pathlib import Path
 import numpy as np
 
 # ============================== 配置 ==============================
-STEP4_DIR = "step4_HSE_band"      # 源目录
-OUT_DIR   = "step4_band_plot"     # 目标目录（输入输出都在这里）
+STEP4_DIR = "step2_bandgap/step2.3_hse"      # 源目录
+OUT_DIR   = "step2_bandgap/step2.4_gap"     # 目标目录（输入输出都在这里）
 
 # 从 step4_HSE_band 拷贝到 step4_band_plot 的输入（存在才拷；OUTCAR 太大只提取 E-fermi）
 COPY_INPUTS = ["EIGENVAL", "vasprun.xml", "POSCAR", "INCAR", "KPOINTS",

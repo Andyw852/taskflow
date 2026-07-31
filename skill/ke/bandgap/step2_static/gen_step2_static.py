@@ -37,7 +37,7 @@ from dim_common import force_kz1, resolve_dim, resolve_tpl, validate_poscar  # n
 #   step1c_PBE_opt -> step1b_PBE_opt -> step1a_PBE_opt -> step1_PBE_opt（旧的单目录）
 # 也可以直接写死某个目录名。
 STEP1_DIR = "step1_std_opt"   # ke：弛豫复用 elastic 目录名
-STEP2_DIR = "step2_PBE_static"
+STEP2_DIR = "step2_bandgap/step2.1_static"
 INCAR_FILE = "INCAR"
 POTCAR_FILE = "POTCAR"
 METHOD_FILE = "workflow_method.txt"

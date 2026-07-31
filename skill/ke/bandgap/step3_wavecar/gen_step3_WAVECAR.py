@@ -234,8 +234,8 @@ ANGLE_TOL = 5.0       # 对称性识别角度容差（度）
 #     （VASP < 6.3 必须设成 False）。那个开关和 VASP 版本绑定，没有挪上来。
 # ###################################################################
 
-STEP2_DIR    = "step2_PBE_static"     # 源目录
-STEP3_DIR    = "step3_PBE_WAVECAR"    # 目标目录
+STEP2_DIR    = "step2_bandgap/step2.1_static"     # 源目录
+STEP3_DIR    = "step2_bandgap/step2.2_wave"    # 目标目录
 
 STRUCT_FILE  = None       # None=自动找 CONTCAR 再 POSCAR
 IBZKPT_FILE  = "IBZKPT"

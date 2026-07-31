@@ -85,28 +85,47 @@ steps:
      check: marker, marker: "transport.json:thermal_conductivity",
      gen: gen_step10_amset.py, gen_need: [submit_amset.tpl], fetch_all: true}
 
+# --- 2 带隙段：4 个子步嵌套进 step2_bandgap/，状态表合并成 S2_bandgap 一列 ----
+# 深度可调（band 技能同款流程，泛函 pbe/pbesol 由 step1 弛豫继承）：
+#   bandgap_depth 由项目配置控制 —— 但这里用两个可选组表达：
+#     bandgap_steps  : 关掉 = 完全不算带隙（手填 setting.yaml 的 bandgap）
+#     bandgap_hse    : 关掉 = 只到 PBE（跑 2.1 static + 2.2 wave + 2.4 gap，
+#                      跳过 2.3 HSE），得 PBE/PBEsol 带隙；开 = 走到 HSE。
+# 计算目录名（rename_bandgap.sh 已把 gen 脚本常量改成这些）：
+#   step2_bandgap/step2.1_static  step2.2_wave  step2.3_hse  step2.4_gap
+# group: S2_bandgap 让 4 子步在状态表合并为一列，第二行显示走到哪步。
 optional_steps:
   bandgap_steps:
     default: true
     steps:
-      - {seq: 2, name: step2_PBE_static, label: S2_static, after: step1_std_opt,
+      - {seq: 2.1, name: "step2_bandgap/step2.1_static", label: S2.1_scf,
+         group: S2_bandgap, after: step1_std_opt,
          src: bandgap/step2_static, check: outcar, gen: gen_step2_static.py,
          gen_need: [dim_common.py, check_common.py, step2_check_and_resubmit.py,
                     incar_2d.tpl, incar_3d.tpl, submit_std_2d.tpl, submit_std_3d.tpl]}
-      - {seq: 2.1, name: step3_PBE_WAVECAR, label: S2.1_wave, after: step2_PBE_static,
+      - {seq: 2.2, name: "step2_bandgap/step2.2_wave", label: S2.2_wave,
+         group: S2_bandgap, after: "step2_bandgap/step2.1_static",
          src: bandgap/step3_wavecar, check: wavecar, gen: gen_step3_WAVECAR.py,
          gen_need: [dim_common.py, check_common.py, step3_check_and_resubmit.py,
                     incar_2d.tpl, incar_3d.tpl, submit_std_2d.tpl, submit_std_3d.tpl,
                     submit_ncl_2d.tpl, submit_ncl_3d.tpl]}
-      - {seq: 2.2, name: step4_HSE_band, label: S2.2_HSE, after: step3_PBE_WAVECAR,
+      - {seq: 2.4, name: "step2_bandgap/step2.4_gap", label: S2.4_gap,
+         group: S2_bandgap, after: "step2_bandgap/step2.2_wave",
+         src: bandgap/step4_plot, check: plot, run: gen,
+         done_marker: band_summary.json, gen: "gen_step4.1_plot_band.py",
+         gen_need: [], fetch_all: true}
+  # HSE 子步单独一组：默认开=走到 HSE 带隙；bandgap_hse: false 只到 PBE。
+  # 它插在 2.2_wave 之后，2.4_gap 的画图脚本会自动认 step2.3_hse（存在就画 HSE，
+  # 不存在就画 PBE，见 gen_step4.1_plot_band 的 --step4-dir 逻辑）。
+  bandgap_hse:
+    default: true
+    steps:
+      - {seq: 2.3, name: "step2_bandgap/step2.3_hse", label: S2.3_hse,
+         group: S2_bandgap, after: "step2_bandgap/step2.2_wave",
          src: bandgap/step4_hse, check: outcar, gen: gen_step4_HSE.py,
          gen_need: [dim_common.py, check_common.py, step4_check_and_resubmit.py,
                     incar_2d.tpl, incar_3d.tpl, submit_std_2d.tpl, submit_std_3d.tpl,
                     submit_ncl_2d.tpl, submit_ncl_3d.tpl]}
-      - {seq: 2.3, name: step4_band_plot, label: S2.3_gap, after: step4_HSE_band,
-         src: bandgap/step4_plot, check: plot, run: gen,
-         done_marker: band_summary.json, gen: "gen_step4.1_plot_band.py",
-         gen_need: [], fetch_all: true}
 
 requires:
   python: [pymatgen, numpy, matplotlib, amset]
