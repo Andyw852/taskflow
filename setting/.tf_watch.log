@@ -7831,3 +7831,25 @@ auto C60/qHPC60[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 
 auto C60/qTP1C60[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
 auto C60/qTP2C60[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
 [15:15:35] 无变化
+auto C20/qHPC20[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto C20/qTPC20-b[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto C20/qTPC20-r[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto C24/qHPC24[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto C24/qTPC24[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto C36/qHPC36-D6h[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto C36/qTP2C36-D2d[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto C60/qHPC60[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto C60/qTP1C60[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto C60/qTP2C60[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+[15:21:18] 无变化
+auto C20/qHPC20[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto C20/qTPC20-b[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto C20/qTPC20-r[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto C24/qHPC24[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto C24/qTPC24[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto C36/qHPC36-D6h[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto C36/qTP2C36-D2d[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto C60/qHPC60[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto C60/qTP1C60[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto C60/qTP2C60[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+[15:27:04] 无变化
