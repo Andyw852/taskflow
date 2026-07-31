@@ -35,4 +35,4 @@ task_types:
   elastic:
     work_dir: /public/home/wangchao/Fullerene_Network/work
   ke:
-  work_dir: /public/home/wangchao/Fullerene_Network/work
+    work_dir: /public/home/wangchao/Fullerene_Network/work

@@ -1,0 +1,268 @@
+diff --git a/versions/v1.0/tf b/versions/v1.0/tf
+index a398f5c..c3933d8 100755
+--- a/versions/v1.0/tf
++++ b/versions/v1.0/tf
+@@ -2223,20 +2223,25 @@ def find_asset(cfg, t, m, fname, sname=None):
+     real = (m.get("template_map") or {}).get(fname)
+     sld = m.get("_skill_dir_local")
+     tdir = (m.get("template_subdir") or "templates")   # v1.7：项目内模板子文件夹名
+-    if sld:   # v1.6：技能子目录私有模板/依赖最优先（按技能定制）
+-        cands.append(os.path.join(sld, fname))
+-        if real:
+-            cands.append(os.path.join(sld, real))
+-        cands.append(os.path.join(sld, tdir, fname))   # v1.7：材料/<技能>/templates/
+-        if real:
+-            cands.append(os.path.join(sld, tdir, real))
+-    if ps:
+-        cands.append(os.path.join(ps, fname))
+-        if real:
+-            cands.append(os.path.join(ps, real))
+-        cands.append(os.path.join(ps, tdir, fname))    # v1.7：project_setting/templates/
+-        if real:
+-            cands.append(os.path.join(ps, tdir, real))
++    # v1.9：项目侧也按步骤分目录。优先级（越具体越优先）：
++    #   <根>/templates/<步骤名>/ > <根>/templates/ > <根>/
++    # 根依次为 材料/<技能>/（sld）、project_setting/（ps）。
++    def _proj_dirs(root):
++        dirs, troot = [], os.path.join(root, tdir)
++        if sname:
++            dirs.append(os.path.join(troot, str(sname)))
++        else:      # 不指定步骤（如 tf hpc 查模板齐不齐）：所有步骤目录都算命中
++            dirs.extend(sorted(d for d in glob.glob(os.path.join(troot, "*"))
++                               if os.path.isdir(d)))
++        dirs.append(troot)
++        dirs.append(root)
++        return dirs
++
++    for _root in ([sld] if sld else []) + ([ps] if ps else []):
++        for _d in _proj_dirs(_root):
++            cands.append(os.path.join(_d, fname))
++            if real:
++                cands.append(os.path.join(_d, real))
+     seg = (m.get("_seg") or {})
+     sd = seg.get("skill_dir") or t.get("skill_dir")
+     sdirs = []
+@@ -2263,6 +2268,123 @@ def find_asset(cfg, t, m, fname, sname=None):
+     return None
+ 
+ 
++STEP_CONF = "step.conf"
++_STEPCONF_MOD = {}
++
++
++def _stepconf_mod(cfg, t, m):
++    """按技能加载该技能目录里的 stepconf.py（与 dim_common.py 一样每技能一份）。"""
++    key = t.get("key")
++    if key in _STEPCONF_MOD:
++        return _STEPCONF_MOD[key]
++    path = find_asset(cfg, t, m, "stepconf.py")
++    mod = None
++    if path:
++        import importlib.util as _ilu
++        spec = _ilu.spec_from_file_location("stepconf_%s" % key, path)
++        mod = _ilu.module_from_spec(spec)
++        spec.loader.exec_module(mod)
++    _STEPCONF_MOD[key] = mod
++    return mod
++
++
++def step_conf_sources(cfg, t, m, sname):
++    """收集该步骤的 step.conf 分层来源，低优先级在前。
++    顺序：skill 出厂默认 → 项目 templates/step.conf → 项目 templates/<步骤>/step.conf
++    （材料/<技能>/ 下的同名文件优先级最高，最后叠加）。"""
++    out, seen = [], set()
++
++    def _add(path, note):
++        if path and os.path.isfile(path) and path not in seen:
++            seen.add(path)
++            out.append((path, note))
++
++    seg = (m.get("_seg") or {})
++    sd = seg.get("skill_dir") or t.get("skill_dir")
++    if sd and not os.path.isabs(sd):
++        pkg_root = os.path.normpath(os.path.join(
++            os.path.dirname(os.path.realpath(__file__)), "..", ".."))
++        for base in (seg.get("_base_dir") or t.get("_base_dir"),
++                     cfg.get("_config_dir"), pkg_root):
++            if base and os.path.isdir(os.path.join(base, sd)):
++                sd = os.path.normpath(os.path.join(base, sd))
++                break
++    tdir = (m.get("template_subdir") or "templates")
++    if sd:                                            # skill 出厂默认
++        _add(os.path.join(sd, tdir, STEP_CONF), "skill 默认")
++        if sname:
++            _add(os.path.join(sd, tdir, str(sname), STEP_CONF), "skill 默认(本步)")
++    for root, tag in ((( m.get("ps") or {}).get("dir"), "project_setting"),
++                      (m.get("_skill_dir_local"), "材料/<技能>")):
++        if not root:
++            continue
++        _add(os.path.join(root, tdir, STEP_CONF), "%s 共用" % tag)
++        if sname:
++            _add(os.path.join(root, tdir, str(sname), STEP_CONF),
++                 "%s 本步" % tag)
++    return out
++
++
++def build_step_conf(cfg, t, m, sname):
++    """把分层 step.conf 合并成一份带来源注释的文本。无任何来源时返回 None。"""
++    mod = _stepconf_mod(cfg, t, m)
++    srcs = step_conf_sources(cfg, t, m, sname)
++    if not mod or not srcs:
++        return None, []
++    tagged, legend = [], []
++    for i, (path, note) in enumerate(srcs, 1):
++        tag = "[%d]" % i
++        legend.append((tag, path, note))
++        with open(path, encoding="utf-8-sig") as fh:
++            tagged.append((tag, fh.read()))
++    merged, prov = mod.merge(tagged)
++    header = ["# ===== 本文件由 tf 自动合成，勿手改 —— 要改请改下面列出的上游 =====",
++              "# 步骤 %s   材料 %s" % (sname, m.get("name")),
++              "# 来源（越靠下优先级越高）："]
++    header += ["#   %s %s   (%s)" % (tg, pt, nt) for tg, pt, nt in legend]
++    return mod.dumps(merged, prov, header), legend
++
++
++def cmd_conf(cfg, data, proj, jname, sets=None):
++    """查看/修改某步骤的 step.conf。--set 一律写进【本步的项目文件】。"""
++    t, m = find_material(data, proj)
++    s = find_step(m, jname)
++    sname = s["name"]
++    mod = _stepconf_mod(cfg, t, m)
++    if not mod:
++        print("错误：该技能目录里没有 stepconf.py。")
++        return 1
++    if sets:
++        ps = (m.get("ps") or {}).get("dir")
++        if not ps:
++            print("错误：该材料还没有 project_setting，先跑 tf -p %s init。" % m["name"])
++            return 1
++        dst = os.path.join(ps, m.get("template_subdir") or "templates",
++                           sname, STEP_CONF)
++        print("写入 %s" % dst)
++        for kv in sets:
++            if "=" not in kv:
++                print("  跳过 %r（应为 节.键=值）" % kv)
++                continue
++            path, val = kv.split("=", 1)
++            sec, key = (path.rsplit(".", 1) if "." in path else ("params", path))
++            old, _ = mod.set_value(dst, sec, key, val if val != "" else None)
++            print("  [%s] %-18s %s -> %s" % (sec, key, old if old is not None
++                                             else "（无）", val or "（删除）"))
++    text, legend = build_step_conf(cfg, t, m, sname)
++    if text is None:
++        print("该步骤没有任何 step.conf。")
++        return 1
++    print("\n步骤 %s (%s)   材料 %s   超算 %s"
++          % (sname, s.get("label"), m.get("name"), m.get("host_eff") or "-"))
++    print("来源（越靠下优先级越高）：")
++    for tg, pt, nt in legend:
++        print("  %s %s   (%s)" % (tg, pt, nt))
++    print()
++    print("\n".join(l for l in text.splitlines() if not l.startswith("#")))
++    return 0
++
++
+ def remote_scancel(cfg, jobids, host="__default__"):
+     ids = []                                  # v1.4：代表 jobid → 全部 jobid
+     for x in (jobids or []):
+@@ -2325,6 +2447,14 @@ def remote_gen(cfg, t, m, sname):
+                 b64 = base64.b64encode(fh.read()).decode()
+             line += "[ -f POSCAR ] || echo %s | base64 -d > POSCAR ; " % b64
+     for f in need:
++        if f == STEP_CONF:      # v1.9：step.conf 不按单文件推，先本地合并分层
++            text, _lg = build_step_conf(cfg, t, m, sname)
++            if text is None:
++                return False, ("找不到任何 %s（skill/templates 与 "
++                               "project_setting/templates 都没有）" % STEP_CONF)
++            b64 = base64.b64encode(text.encode("utf-8")).decode()
++            line += "echo %s | base64 -d > %s ; " % (b64, shlex.quote(f))
++            continue
+         local_src = find_asset(cfg, t, m, f, sname)
+         if local_src:
+             with open(local_src, "rb") as fh:
+@@ -3479,26 +3609,35 @@ def _init_one(cfg, types, target, name=None, tt=None):
+     # 复制进项目的 templates/ 子文件夹——按项目/材料手改只动这里，不影响其它材料。
+     # 目的地：开 skill_subdir 时进 材料/<技能>/templates/，否则 project_setting/templates/。
+     # find_asset 会优先读这里（v1.7 查找链已含 <技能>/templates 与 ps/templates）。
+-    _layout_all = str((t or {}).get("template_layout") or "shared").lower()
+-    if _layout_all != "per_step" and sd:
+-        _tdst = os.path.join(ps, "templates")   # v1.7：始终放 project_setting/templates/
+-        os.makedirs(_tdst, exist_ok=True)
++    # v1.9：把技能的整套 templates/ 递归复制进项目（保留 <步骤名>/ 子目录结构），
++    # 含 *.tpl 与 *.conf。改这里只影响本项目/材料，不动 skill 库。
++    if sd:
++        _tsrc = os.path.join(sd, str((t or {}).get("template_dir") or "templates"))
++        _tdst = os.path.join(ps, "templates")
+         _copied = 0
+-        for _srcdir in _skill_asset_dirs(t or {}, {}, sd):
+-            if not os.path.isdir(_srcdir):
+-                continue
+-            for _fn in sorted(os.listdir(_srcdir)):
+-                if not _fn.endswith(".tpl"):
++        _jobs = []
++        if os.path.isdir(_tsrc):
++            for _dp, _dn, _fns in os.walk(_tsrc):
++                _rel = os.path.relpath(_dp, _tsrc)
++                _jobs.append((_dp, _tdst if _rel == "." else
++                              os.path.join(_tdst, _rel), _fns))
++        if os.path.isdir(sd):    # 技能根下平铺的老模板也收进 templates/
++            _jobs.append((sd, _tdst, os.listdir(sd)))
++        for _sdir, _ddir, _fns in _jobs:
++            for _fn in sorted(_fns):
++                if not _fn.endswith((".tpl", ".conf")):
++                    continue
++                _s, _d = os.path.join(_sdir, _fn), os.path.join(_ddir, _fn)
++                if not os.path.isfile(_s) or os.path.exists(_d):
+                     continue
+-                _s = os.path.join(_srcdir, _fn)
+-                _d = os.path.join(_tdst, _fn)
+-                if os.path.isfile(_s) and not os.path.exists(_d):
+-                    shutil.copyfile(_s, _d)
+-                    _copied += 1
++                os.makedirs(_ddir, exist_ok=True)
++                shutil.copyfile(_s, _d)
++                _copied += 1
+         if _copied:
+-            print("已复制 %d 个模板 → %s/（改这里的参数只影响本项目/材料）" % (_copied, _tdst))
++            print("已复制 %d 个模板/配置 -> %s/（按步骤分子目录；改这里只影响本材料）"
++                  % (_copied, _tdst))
+         else:
+-            print("templates 子文件夹就绪：%s/（模板已存在，未覆盖）" % _tdst)
++            print("templates 就绪：%s/（已存在，未覆盖）" % _tdst)
+     # v1.2：技能开 skill_subdir 时本地建技能子目录（本地镜像超算结构：
+     # 材料/<技能>/{result,log} ↔ 超算 work/材料/<技能>/stepN）
+     if (t or {}).get("skill_subdir"):
+@@ -4475,13 +4614,16 @@ def main():
+     p.add_argument("--dry-run", dest="dry", action="store_true",
+                    help="migrate-subdir 只打印迁移计划，不执行")
+     p.add_argument("-clean", "--clean", dest="clean", action="store_true")
++    p.add_argument("--set", dest="sets", action="append", metavar="节.键=值",
++                   help="conf：改本步 step.conf（如 --set incar.EDIFF=1E-6；"
++                        "值留空=删除该键）")
+     p.add_argument("args", nargs="*")
+     a, unknown = p.parse_known_args()  # v3.14：位置参数可穿插在选项中间
+     a.args = list(a.args) + unknown    # （-p A B retry / -p A B -j 1 dir）
+ 
+     commands = {"status", "start", "stop", "retry", "rerun", "json", "config",
+                 "dir", "fetch", "init", "clean", "watch", "help", "auto",
+-                "adopt", "migrate-subdir", "hpc", "skills"}
++                "adopt", "migrate-subdir", "hpc", "skills", "conf"}
+     root, cmd, pos = None, "status", []
+     for tok in a.args:  # v3.14：位置参数先收集，之后按"材料名/目录"消歧
+         if tok == "help":
+@@ -4645,6 +4787,14 @@ def main():
+                 print("发现 %d 个新材料目录未初始化：%s"
+                       % (len(new), ", ".join(new)))
+                 print("→ tf init 纳入管理；配 auto_advance: true 后下次 tf 自动开算")
++    elif cmd == "conf":
++        if not projs or not jobs or not jobs[0]:
++            sys.exit("错误：conf 需要 -p 材料 -j 步骤（如 tf -tt bd -p Mg2C60 -j 2 conf）。")
++        fails = 0
++        for pj in projs:
++            for jb in jobs:
++                fails += cmd_conf(cfg, data, pj, jb, a.sets)
++        sys.exit(1 if fails else 0)
+     elif cmd == "json":
+         print(json.dumps(data, ensure_ascii=False, indent=2))
+     elif cmd == "dir":

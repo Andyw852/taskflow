@@ -7853,3 +7853,324 @@ auto C60/qHPC60[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 
 auto C60/qTP1C60[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
 auto C60/qTP2C60[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
 [15:27:04] 无变化
+auto C20/qHPC20[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto C20/qTPC20-b[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto C20/qTPC20-r[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto C24/qHPC24[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto C24/qTPC24[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto C36/qHPC36-D6h[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto C36/qTP2C36-D2d[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto C60/qHPC60[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto C60/qTP1C60[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto C60/qTP2C60[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+[15:32:49] 无变化
+auto C20/qHPC20[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto C20/qTPC20-b[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto C20/qTPC20-r[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto C24/qHPC24[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto C24/qTPC24[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto C36/qHPC36-D6h[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto C36/qTP2C36-D2d[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto C60/qHPC60[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto C60/qTP1C60[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto C60/qTP2C60[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+[15:38:30] 无变化
+auto C20/qHPC20[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto C20/qTPC20-b[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto C20/qTPC20-r[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto C24/qHPC24[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto C24/qTPC24[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto C36/qHPC36-D6h[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto C36/qTP2C36-D2d[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto C60/qHPC60[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto C60/qTP1C60[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto C60/qTP2C60[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto Mg2C60[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto qTPC24-Mg1[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+== band（能带计算，12 个材料）==
++-----------------+------+------+-----+----------+-----------+------------+-------------+---------+-------------+
+| Material        | tt   | hpc  | dim | S1_relax | S2_static | S3_WAVECAR | S3.1_plot   | S4_HSE  | S4.1_plot   |
++=================+======+======+=====+==========+===========+============+=============+=========+=============+
+| C20/qHPC20      | band | jzzn | -   | waiting  | waiting   | waiting    | not started | waiting | not started |
+|                 |      |      |     | S1a_ion  | -         | -          | -           | -       | -           |
+| C20/qTPC20-b    | band | jzzn | -   | waiting  | waiting   | waiting    | not started | waiting | not started |
+|                 |      |      |     | S1a_ion  | -         | -          | -           | -       | -           |
+| C20/qTPC20-r    | band | jzzn | -   | waiting  | waiting   | waiting    | not started | waiting | not started |
+|                 |      |      |     | S1a_ion  | -         | -          | -           | -       | -           |
+| C24/qHPC24      | band | jzzn | -   | waiting  | waiting   | waiting    | not started | waiting | not started |
+|                 |      |      |     | S1a_ion  | -         | -          | -           | -       | -           |
+| C24/qTPC24      | band | jzzn | -   | waiting  | waiting   | waiting    | not started | waiting | not started |
+|                 |      |      |     | S1a_ion  | -         | -          | -           | -       | -           |
+| C36/qHPC36-D6h  | band | jzzn | -   | waiting  | waiting   | waiting    | not started | waiting | not started |
+|                 |      |      |     | S1a_ion  | -         | -          | -           | -       | -           |
+| C36/qTP2C36-D2d | band | jzzn | -   | waiting  | waiting   | waiting    | not started | waiting | not started |
+|                 |      |      |     | S1a_ion  | -         | -          | -           | -       | -           |
+| C60/qHPC60      | band | jzzn | -   | waiting  | waiting   | waiting    | not started | waiting | not started |
+|                 |      |      |     | S1a_ion  | -         | -          | -           | -       | -           |
+| C60/qTP1C60     | band | jzzn | -   | waiting  | waiting   | waiting    | not started | waiting | not started |
+|                 |      |      |     | S1a_ion  | -         | -          | -           | -       | -           |
+| C60/qTP2C60     | band | jzzn | -   | waiting  | waiting   | waiting    | not started | waiting | not started |
+|                 |      |      |     | S1a_ion  | -         | -          | -           | -       | -           |
+| Mg2C60          | band | jzzn | -   | waiting  | waiting   | waiting    | not started | waiting | not started |
+|                 |      |      |     | S1a_ion  | -         | -          | -           | -       | -           |
+| qTPC24-Mg1      | band | jzzn | -   | waiting  | waiting   | waiting    | not started | waiting | not started |
+|                 |      |      |     | S1a_ion  | -         | -          | -           | -       | -           |
++-----------------+------+------+-----+----------+-----------+------------+-------------+---------+-------------+
+Total: 12 | Done: 0 | Waiting: 0 | Actionable: 12
+
+== elastic（弹性常数计算，5 个材料）==
++----------+---------+------+-----+--------+-----------------------+-------------+
+| Material | tt      | hpc  | dim | S1_opt | S2_elastic            | S3_post     |
++==========+=========+======+=====+========+=======================+=============+
+| qHPC20   | elastic | jzzn | 2D  | done   | running               | not started |
+|          |         |      |     | -      | cu13 3587485 22:40:50 | -           |
+| qHPC24   | elastic | jzzn | 2D  | done   | running               | not started |
+|          |         |      |     | -      | cu16 3587487 20:11:03 | -           |
+| qTPC20-b | elastic | jzzn | 2D  | done   | running               | not started |
+|          |         |      |     | -      | cu12 3587491 14:50:26 | -           |
+| qTPC20-r | elastic | jzzn | 2D  | done   | done                  | completed   |
+|          |         |      |     | -      | -                     | -           |
+| qTPC24   | elastic | jzzn | 2D  | done   | done                  | completed   |
+|          |         |      |     | -      | -                     | -           |
++----------+---------+------+-----+--------+-----------------------+-------------+
+Total: 5 | Done: 2 | Waiting: 3 | Actionable: 0
+
+auto C20/qHPC20[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto C20/qTPC20-b[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto C20/qTPC20-r[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto Mg2C60[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto qTPC24-Mg1[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+== band（能带计算，5 个材料）==
++--------------+------+------+-----+----------+-----------+------------+-------------+---------+-------------+
+| Material     | tt   | hpc  | dim | S1_relax | S2_static | S3_WAVECAR | S3.1_plot   | S4_HSE  | S4.1_plot   |
++==============+======+======+=====+==========+===========+============+=============+=========+=============+
+| C20/qHPC20   | band | jzzn | -   | waiting  | waiting   | waiting    | not started | waiting | not started |
+|              |      |      |     | S1a_ion  | -         | -          | -           | -       | -           |
+| C20/qTPC20-b | band | jzzn | -   | waiting  | waiting   | waiting    | not started | waiting | not started |
+|              |      |      |     | S1a_ion  | -         | -          | -           | -       | -           |
+| C20/qTPC20-r | band | jzzn | -   | waiting  | waiting   | waiting    | not started | waiting | not started |
+|              |      |      |     | S1a_ion  | -         | -          | -           | -       | -           |
+| Mg2C60       | band | jzzn | -   | waiting  | waiting   | waiting    | not started | waiting | not started |
+|              |      |      |     | S1a_ion  | -         | -          | -           | -       | -           |
+| qTPC24-Mg1   | band | jzzn | -   | waiting  | waiting   | waiting    | not started | waiting | not started |
+|              |      |      |     | S1a_ion  | -         | -          | -           | -       | -           |
++--------------+------+------+-----+----------+-----------+------------+-------------+---------+-------------+
+Total: 5 | Done: 0 | Waiting: 0 | Actionable: 5
+
+== elastic（弹性常数计算，3 个材料）==
++----------+---------+------+-----+--------+-----------------------+-------------+
+| Material | tt      | hpc  | dim | S1_opt | S2_elastic            | S3_post     |
++==========+=========+======+=====+========+=======================+=============+
+| qHPC20   | elastic | jzzn | 2D  | done   | running               | not started |
+|          |         |      |     | -      | cu13 3587485 22:46:33 | -           |
+| qTPC20-b | elastic | jzzn | 2D  | done   | running               | not started |
+|          |         |      |     | -      | cu12 3587491 14:56:09 | -           |
+| qTPC20-r | elastic | jzzn | 2D  | done   | done                  | completed   |
+|          |         |      |     | -      | -                     | -           |
++----------+---------+------+-----+--------+-----------------------+-------------+
+Total: 3 | Done: 1 | Waiting: 2 | Actionable: 0
+
+[15:55:32] 配置变更但重载失败（错误：类型 band 在全局 tf.yaml 里没有对应定义（继承不到 steps）。
+来源文件：/home/wangchao/Fullerene_Network/Mg2C60/band/project_setting/tf_Mg2C60_band.yaml
+通常是该文件的类型名和全局 tf.yaml 不一致（如 bd 改名 band 后没同步）。
+全局可用的类型名：（无）。修正命令：
+  sed -i 's/^  band:/  band:/' /home/wangchao/Fullerene_Network/Mg2C60/band/project_setting/tf_Mg2C60_band.yaml），沿用旧配置继续监控。
+auto C20/qHPC20[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto C20/qTPC20-b[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto C20/qTPC20-r[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto Mg2C60[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto qTPC24-Mg1[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+[15:55:40] 无变化
+auto C20/qHPC20[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto C20/qTPC20-b[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto C20/qTPC20-r[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto Mg2C60[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto qTPC24-Mg1[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+[16:01:21] 无变化
+auto C20/qHPC20[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto C20/qTPC20-b[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto C20/qTPC20-r[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto Mg2C60[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto qTPC24-Mg1[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+[16:07:05] 无变化
+auto C20/qHPC20[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto C20/qTPC20-b[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto C20/qTPC20-r[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto Mg2C60[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto qTPC24-Mg1[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+[16:12:50] 无变化
+auto C20/qHPC20[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto C20/qTPC20-b[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto C20/qTPC20-r[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto Mg2C60[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto qTPC24-Mg1[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+[16:18:31] 无变化
+auto C20/qHPC20[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto C20/qTPC20-b[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto C20/qTPC20-r[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto Mg2C60[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto qTPC24-Mg1[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+[16:24:15] 无变化
+auto C20/qHPC20[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto C20/qTPC20-b[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto C20/qTPC20-r[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto Mg2C60[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto qTPC24-Mg1[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+[16:29:56] 无变化
+auto C20/qHPC20[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto C20/qTPC20-b[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto C20/qTPC20-r[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto Mg2C60[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto qTPC24-Mg1[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+[16:35:40] 无变化
+auto C20/qHPC20[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto C20/qTPC20-b[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto C20/qTPC20-r[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto Mg2C60[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto qTPC24-Mg1[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+[16:41:20] 无变化
+auto C20/qHPC20[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto C20/qTPC20-b[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto C20/qTPC20-r[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto Mg2C60[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto qTPC24-Mg1[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+[16:47:04] 无变化
+auto C20/qHPC20[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto C20/qTPC20-b[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto C20/qTPC20-r[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto Mg2C60[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto qTPC24-Mg1[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+[16:52:48] 无变化
+auto C20/qHPC20[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto C20/qTPC20-b[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto C20/qTPC20-r[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto Mg2C60[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto qTPC24-Mg1[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+[16:58:29] 无变化
+auto C20/qHPC20[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto C20/qTPC20-b[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto C20/qTPC20-r[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto Mg2C60[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto qTPC24-Mg1[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+== band（能带计算，5 个材料）==
++--------------+------+------+-----+----------+-----------+------------+-------------+---------+-------------+
+| Material     | tt   | hpc  | dim | S1_relax | S2_static | S3_WAVECAR | S3.1_plot   | S4_HSE  | S4.1_plot   |
++==============+======+======+=====+==========+===========+============+=============+=========+=============+
+| C20/qHPC20   | band | jzzn | -   | waiting  | waiting   | waiting    | not started | waiting | not started |
+|              |      |      |     | S1a_ion  | -         | -          | -           | -       | -           |
+| C20/qTPC20-b | band | jzzn | -   | waiting  | waiting   | waiting    | not started | waiting | not started |
+|              |      |      |     | S1a_ion  | -         | -          | -           | -       | -           |
+| C20/qTPC20-r | band | jzzn | -   | waiting  | waiting   | waiting    | not started | waiting | not started |
+|              |      |      |     | S1a_ion  | -         | -          | -           | -       | -           |
+| Mg2C60       | band | jzzn | -   | waiting  | waiting   | waiting    | not started | waiting | not started |
+|              |      |      |     | S1a_ion  | -         | -          | -           | -       | -           |
+| qTPC24-Mg1   | band | jzzn | -   | waiting  | waiting   | waiting    | not started | waiting | not started |
+|              |      |      |     | S1a_ion  | -         | -          | -           | -       | -           |
++--------------+------+------+-----+----------+-----------+------------+-------------+---------+-------------+
+Total: 5 | Done: 0 | Waiting: 0 | Actionable: 5
+
+== elastic（弹性常数计算，3 个材料）==
++----------+---------+------+-----+--------+-----------------------+-------------+
+| Material | tt      | hpc  | dim | S1_opt | S2_elastic            | S3_post     |
++==========+=========+======+=====+========+=======================+=============+
+| qHPC20   | elastic | jzzn | 2D  | done   | error                 | not started |
+|          |         |      |     | -      | -                     | -           |
+| qTPC20-b | elastic | jzzn | 2D  | done   | running               | not started |
+|          |         |      |     | -      | cu12 3587491 16:10:24 | -           |
+| qTPC20-r | elastic | jzzn | 2D  | done   | done                  | completed   |
+|          |         |      |     | -      | -                     | -           |
++----------+---------+------+-----+--------+-----------------------+-------------+
+Total: 3 | Done: 1 | Waiting: 1 | Actionable: 1
+
+FAILED / NEEDS ATTENTION:
+  [elastic] qHPC20                 S2_elastic OUTCAR incomplete
+
+auto C20/qHPC20[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto C20/qTPC20-b[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto C20/qTPC20-r[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto Mg2C60[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto qTPC24-Mg1[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+[17:09:46] 无变化
+[17:15:19] 配置变更但重载失败（错误：类型 band 在全局 tf.yaml 里没有对应定义（继承不到 steps）。
+来源文件：/home/wangchao/Fullerene_Network/Mg2C60/band/project_setting/tf_Mg2C60_band.yaml
+通常是该文件的类型名和全局 tf.yaml 不一致（如 bd 改名 band 后没同步）。
+全局可用的类型名：（无）。修正命令：
+  sed -i 's/^  band:/  band:/' /home/wangchao/Fullerene_Network/Mg2C60/band/project_setting/tf_Mg2C60_band.yaml），沿用旧配置继续监控。
+auto C20/qHPC20[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto C20/qTPC20-b[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto C20/qTPC20-r[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto Mg2C60[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto qTPC24-Mg1[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+[17:15:20] 无变化
+auto C20/qHPC20[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto C20/qTPC20-b[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto C20/qTPC20-r[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto Mg2C60[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto qTPC24-Mg1[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+[17:21:03] 无变化
+auto C20/qHPC20[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto C20/qTPC20-b[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto C20/qTPC20-r[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto Mg2C60[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto qTPC24-Mg1[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+[17:26:44] 无变化
+auto C20/qHPC20[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto C20/qTPC20-b[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto C20/qTPC20-r[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto Mg2C60[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto qTPC24-Mg1[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+[17:32:28] 无变化
+auto C20/qHPC20[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto C20/qTPC20-b[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto C20/qTPC20-r[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto Mg2C60[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto qTPC24-Mg1[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+[17:38:12] 无变化
+auto C20/qHPC20[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto C20/qTPC20-b[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto C20/qTPC20-r[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto Mg2C60[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto qTPC24-Mg1[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+[17:43:53] 无变化
+auto C20/qHPC20[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto C20/qTPC20-b[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto C20/qTPC20-r[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto Mg2C60[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto qTPC24-Mg1[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+[17:49:38] 无变化
+auto C20/qHPC20[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto C20/qTPC20-b[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto C20/qTPC20-r[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto Mg2C60[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto qTPC24-Mg1[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+[17:55:18] 无变化
+auto C20/qHPC20[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto C20/qTPC20-b[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto C20/qTPC20-r[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto Mg2C60[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto qTPC24-Mg1[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+[18:01:03] 无变化
+auto C20/qHPC20[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto C20/qTPC20-b[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto C20/qTPC20-r[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto Mg2C60[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto qTPC24-Mg1[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+[18:06:44] 无变化
+auto C20/qHPC20[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto C20/qTPC20-b[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto C20/qTPC20-r[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto Mg2C60[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto qTPC24-Mg1[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+[18:12:28] 无变化
+auto C20/qHPC20[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto C20/qTPC20-b[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto C20/qTPC20-r[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto Mg2C60[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto qTPC24-Mg1[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+[18:18:05] 无变化
+auto C20/qHPC20[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto C20/qTPC20-b[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto C20/qTPC20-r[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto Mg2C60[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto qTPC24-Mg1[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+[18:23:49] 无变化
