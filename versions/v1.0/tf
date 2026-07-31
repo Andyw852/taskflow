@@ -2321,19 +2321,23 @@ def step_conf_sources(cfg, t, m, sname):
             if base and os.path.isdir(os.path.join(base, sd)):
                 sd = os.path.normpath(os.path.join(base, sd))
                 break
-    tdir = (m.get("template_subdir") or "templates")
+    # v1.9.3：skill 侧用 template_dir（ke 是 "."），项目侧用 template_subdir。
+    # 两者是不同的键，早先都当成 "templates" 会让 ke 的项目级 step.conf 失效。
+    sk_tdir = str(seg.get("template_dir") or t.get("template_dir") or "templates")
+    pj_tdir = str(m.get("template_subdir") or "templates")
     if sd:                                            # skill 出厂默认
-        _add(os.path.join(sd, tdir, STEP_CONF), "skill 默认")
+        _add(os.path.normpath(os.path.join(sd, sk_tdir, STEP_CONF)), "skill 默认")
         if sname:
-            _add(os.path.join(sd, tdir, str(sname), STEP_CONF), "skill 默认(本步)")
+            _add(os.path.normpath(os.path.join(sd, sk_tdir, str(sname),
+                                               STEP_CONF)), "skill 默认(本步)")
     for root, tag in ([] if _SKILL_ONLY else
                       [((m.get("ps") or {}).get("dir"), "project_setting"),
                        (m.get("_skill_dir_local"), "材料/<技能>")]):
         if not root:
             continue
-        _add(os.path.join(root, tdir, STEP_CONF), "%s 共用" % tag)
+        _add(os.path.join(root, pj_tdir, STEP_CONF), "%s 共用" % tag)
         if sname:
-            _add(os.path.join(root, tdir, str(sname), STEP_CONF),
+            _add(os.path.join(root, pj_tdir, str(sname), STEP_CONF),
                  "%s 本步" % tag)
     return out
 
