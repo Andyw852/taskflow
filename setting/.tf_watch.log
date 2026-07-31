@@ -8174,3 +8174,104 @@ auto C20/qTPC20-r[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺�
 auto Mg2C60[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
 auto qTPC24-Mg1[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
 [18:23:49] 无变化
+auto C20/qHPC20[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto C20/qTPC20-b[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto C20/qTPC20-r[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto Mg2C60[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto qTPC24-Mg1[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+[18:29:34] 无变化
+auto C20/qHPC20[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto C20/qTPC20-b[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto C20/qTPC20-r[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto Mg2C60[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto qTPC24-Mg1[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+[18:35:15] 无变化
+auto C20/qHPC20[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto C20/qTPC20-b[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto C20/qTPC20-r[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto Mg2C60[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto qTPC24-Mg1[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+[18:40:48] 无变化
+auto C20/qHPC20[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto C20/qTPC20-b[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto C20/qTPC20-r[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto Mg2C60[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto qTPC24-Mg1[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+[18:46:33] 无变化
+auto C20/qHPC20[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto C20/qTPC20-b[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto C20/qTPC20-r[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto Mg2C60[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+auto qTPC24-Mg1[band|S1a_ion]: gen 失败。project_setting/skill_dir 里缺少 incar_2d.tpl，且未配置 gen_dir 兜底
+[18:52:18] 无变化
+监控模式：每 300 秒刷新（auto-fetch + auto-advance 关（tf.yaml 里 auto_advance: true 可开）；配置改动自动重载），Ctrl+C 退出。
+== band（能带计算，5 个材料）==
++--------------+------+------+-----+----------+-----------+------------+-------------+---------+-------------+
+| Material     | tt   | hpc  | dim | S1_relax | S2_static | S3_WAVECAR | S3.1_plot   | S4_HSE  | S4.1_plot   |
++==============+======+======+=====+==========+===========+============+=============+=========+=============+
+| C20/qHPC20   | band | jzzn | -   | waiting  | waiting   | waiting    | not started | waiting | not started |
+|              |      |      |     | S1a_ion  | -         | -          | -           | -       | -           |
+| C20/qTPC20-b | band | jzzn | -   | waiting  | waiting   | waiting    | not started | waiting | not started |
+|              |      |      |     | S1a_ion  | -         | -          | -           | -       | -           |
+| C20/qTPC20-r | band | jzzn | -   | waiting  | waiting   | waiting    | not started | waiting | not started |
+|              |      |      |     | S1a_ion  | -         | -          | -           | -       | -           |
+| Mg2C60       | band | jzzn | 3D  | waiting  | waiting   | waiting    | not started | waiting | not started |
+|              |      |      |     | S1b_cell | -         | -          | -           | -       | -           |
+| qTPC24-Mg1   | band | jzzn | -   | waiting  | waiting   | waiting    | not started | waiting | not started |
+|              |      |      |     | S1a_ion  | -         | -          | -           | -       | -           |
++--------------+------+------+-----+----------+-----------+------------+-------------+---------+-------------+
+Total: 5 | Done: 0 | Waiting: 0 | Actionable: 5
+
+== ke（能带计算，5 个材料）==
++--------------+----+------+-----+---------+------------+------------+---------+------------+------------+-----------+-------------+----------+
+| Material     | tt | hpc  | dim | S1_opt  | S2_bandgap | S3_uniform | S4_wave | S5_dielect | S6_elastic | S7_deform | S7.1_read   | S8_kappa |
++==============+====+======+=====+=========+============+============+=========+============+============+===========+=============+==========+
+| C20/qHPC20   | ke | jzzn | -   | waiting | waiting    | waiting    | waiting | waiting    | waiting    | waiting   | not started | waiting  |
+|              |    |      |     | -       | S2.1_scf   | -          | -       | -          | -          | -         | -           | -        |
+| C20/qTPC20-b | ke | jzzn | -   | waiting | waiting    | waiting    | waiting | waiting    | waiting    | waiting   | not started | waiting  |
+|              |    |      |     | -       | S2.1_scf   | -          | -       | -          | -          | -         | -           | -        |
+| C20/qTPC20-r | ke | jzzn | -   | waiting | waiting    | waiting    | waiting | waiting    | waiting    | waiting   | not started | waiting  |
+|              |    |      |     | -       | S2.1_scf   | -          | -       | -          | -          | -         | -           | -        |
+| Mg2C60       | ke | jzzn | -   | waiting | waiting    | waiting    | waiting | waiting    | waiting    | waiting   | not started | waiting  |
+|              |    |      |     | -       | S2.1_scf   | -          | -       | -          | -          | -         | -           | -        |
+| qTPC24-Mg1   | ke | jzzn | -   | waiting | waiting    | waiting    | waiting | waiting    | waiting    | waiting   | not started | waiting  |
+|              |    |      |     | -       | S2.1_scf   | -          | -       | -          | -          | -         | -           | -        |
++--------------+----+------+-----+---------+------------+------------+---------+------------+------------+-----------+-------------+----------+
+Total: 5 | Done: 0 | Waiting: 0 | Actionable: 5
+
+[19:03:27] 无变化
+监控模式：每 300 秒刷新（auto-fetch + auto-advance 关（tf.yaml 里 auto_advance: true 可开）；配置改动自动重载），Ctrl+C 退出。
+== band（能带计算，5 个材料）==
++--------------+------+------+-----+----------+-----------+------------+-------------+---------+-------------+
+| Material     | tt   | hpc  | dim | S1_relax | S2_static | S3_WAVECAR | S3.1_plot   | S4_HSE  | S4.1_plot   |
++==============+======+======+=====+==========+===========+============+=============+=========+=============+
+| C20/qHPC20   | band | jzzn | -   | waiting  | waiting   | waiting    | not started | waiting | not started |
+|              |      |      |     | S1a_ion  | -         | -          | -           | -       | -           |
+| C20/qTPC20-b | band | jzzn | -   | waiting  | waiting   | waiting    | not started | waiting | not started |
+|              |      |      |     | S1a_ion  | -         | -          | -           | -       | -           |
+| C20/qTPC20-r | band | jzzn | -   | waiting  | waiting   | waiting    | not started | waiting | not started |
+|              |      |      |     | S1a_ion  | -         | -          | -           | -       | -           |
+| Mg2C60       | band | jzzn | 3D  | waiting  | waiting   | waiting    | not started | waiting | not started |
+|              |      |      |     | S1b_cell | -         | -          | -           | -       | -           |
+| qTPC24-Mg1   | band | jzzn | -   | waiting  | waiting   | waiting    | not started | waiting | not started |
+|              |      |      |     | S1a_ion  | -         | -          | -           | -       | -           |
++--------------+------+------+-----+----------+-----------+------------+-------------+---------+-------------+
+Total: 5 | Done: 0 | Waiting: 0 | Actionable: 5
+
+== ke（能带计算，5 个材料）==
++--------------+----+------+-----+---------+------------+------------+---------+------------+------------+-----------+-------------+----------+
+| Material     | tt | hpc  | dim | S1_opt  | S2_bandgap | S3_uniform | S4_wave | S5_dielect | S6_elastic | S7_deform | S7.1_read   | S8_kappa |
++==============+====+======+=====+=========+============+============+=========+============+============+===========+=============+==========+
+| C20/qHPC20   | ke | jzzn | -   | waiting | waiting    | waiting    | waiting | waiting    | waiting    | waiting   | not started | waiting  |
+|              |    |      |     | -       | S2.1_scf   | -          | -       | -          | -          | -         | -           | -        |
+| C20/qTPC20-b | ke | jzzn | -   | waiting | waiting    | waiting    | waiting | waiting    | waiting    | waiting   | not started | waiting  |
+|              |    |      |     | -       | S2.1_scf   | -          | -       | -          | -          | -         | -           | -        |
+| C20/qTPC20-r | ke | jzzn | -   | waiting | waiting    | waiting    | waiting | waiting    | waiting    | waiting   | not started | waiting  |
+|              |    |      |     | -       | S2.1_scf   | -          | -       | -          | -          | -         | -           | -        |
+| Mg2C60       | ke | jzzn | -   | waiting | waiting    | waiting    | waiting | waiting    | waiting    | waiting   | not started | waiting  |
+|              |    |      |     | -       | S2.1_scf   | -          | -       | -          | -          | -         | -           | -        |
+| qTPC24-Mg1   | ke | jzzn | -   | waiting | waiting    | waiting    | waiting | waiting    | waiting    | waiting   | not started | waiting  |
+|              |    |      |     | -       | S2.1_scf   | -          | -       | -          | -          | -         | -           | -        |
++--------------+----+------+-----+---------+------------+------------+---------+------------+------------+-----------+-------------+----------+
+Total: 5 | Done: 0 | Waiting: 0 | Actionable: 5
+
