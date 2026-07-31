@@ -24,7 +24,7 @@ defaults:
 steps:
   - {seq: 1, name: step1_std_opt, label: S1_opt, check: outcar_relax,
      gen: gen_step1_std_opt.py, contcar_to_poscar: true,
-     gen_need: [dim_common.py, check_common.py, step1_check_and_resubmit.py,
+     gen_need: [dim_common.py, stepconf.py, step.conf, check_common.py, step1_check_and_resubmit.py,
                 incar_2d.tpl, incar_3d.tpl, submit_std_2d.tpl, submit_std_3d.tpl]}
   - {seq: 2, name: step2_elastic, label: S2_elastic, check: marker,
      marker: "OUTCAR:TOTAL ELASTIC MODULI", gen: gen_step2_elastic.py,

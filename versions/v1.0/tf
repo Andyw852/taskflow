@@ -2211,6 +2211,17 @@ def _skill_asset_dirs(t, m, base, sname=None):
     return uniq
 
 
+def _same_file(a, b):
+    try:
+        with open(a, "rb") as fa, open(b, "rb") as fb:
+            return fa.read() == fb.read()
+    except OSError:
+        return False
+
+
+_SKILL_ONLY = False      # v1.9：rerun --from-skill 时置 True，忽略项目侧模板覆盖
+
+
 def find_asset(cfg, t, m, fname, sname=None):
     """v3 资源查找链：材料/<技能>/逻辑名（v1.6 最优先）→ project_setting/逻辑名
     → project_setting/映射名 → skill_dir 内按 _skill_asset_dirs 的顺序（v1.3）。
@@ -2237,7 +2248,8 @@ def find_asset(cfg, t, m, fname, sname=None):
         dirs.append(root)
         return dirs
 
-    for _root in ([sld] if sld else []) + ([ps] if ps else []):
+    _roots = [] if _SKILL_ONLY else (([sld] if sld else []) + ([ps] if ps else []))
+    for _root in _roots:
         for _d in _proj_dirs(_root):
             cands.append(os.path.join(_d, fname))
             if real:
@@ -2314,8 +2326,9 @@ def step_conf_sources(cfg, t, m, sname):
         _add(os.path.join(sd, tdir, STEP_CONF), "skill 默认")
         if sname:
             _add(os.path.join(sd, tdir, str(sname), STEP_CONF), "skill 默认(本步)")
-    for root, tag in ((( m.get("ps") or {}).get("dir"), "project_setting"),
-                      (m.get("_skill_dir_local"), "材料/<技能>")):
+    for root, tag in ([] if _SKILL_ONLY else
+                      [((m.get("ps") or {}).get("dir"), "project_setting"),
+                       (m.get("_skill_dir_local"), "材料/<技能>")]):
         if not root:
             continue
         _add(os.path.join(root, tdir, STEP_CONF), "%s 共用" % tag)
@@ -2868,6 +2881,20 @@ def cmd_stop(cfg, data, mname, jname, yes):
     return 0 if ok_all else 1
 
 
+def retry_submit(cfg, t, m, s, force, tag):
+    """v1.9：retry = 先 scancel 在跑的作业 -> 用【项目配置】重新生成输入 -> 重新提交。
+    与 rerun 的区别：retry 不删除步骤目录（保留 OUTCAR/CONTCAR 等已有产物），
+    只覆盖生成的输入文件；rerun 会 rm -rf 整个步骤目录。"""
+    if s.get("job") and not kill_if_queued(cfg, s, True, tag):
+        return False
+    s2 = dict(s)
+    s2["job"] = None
+    return do_submit(cfg, t, m, s2, force, gen_first=True,
+                     contcar_cp=step_cfg(t, s["name"], m).get(
+                         "contcar_to_poscar", False),
+                     tag=tag)
+
+
 def cmd_retry(cfg, data, mname, jname, force, incl_scancel=False):
     """incl_scancel：-status scancel 显式筛选过时，SCANCEL 步骤也可 retry
     （v1.4；默认批量 retry 只动 FAIL，不碰 scancel 标记的步骤）。"""
@@ -2878,14 +2905,11 @@ def cmd_retry(cfg, data, mname, jname, force, incl_scancel=False):
 
     if jname and not mname:  # v3.11：重交全部材料的指定 FAIL 步骤
         for t, m, s in step_targets(data, jname):
-            if not _retryable(s) or s.get("job"):
+            if not _retryable(s):
                 continue
             if not guard_predecessors(m, s, force):
                 continue
-            if not do_submit(cfg, t, m, s, force, gen_first=False,
-                             contcar_cp=step_cfg(t, s["name"], m).get(
-                                 "contcar_to_poscar", False),
-                             tag="retry " + tag_of(m, s)):
+            if not retry_submit(cfg, t, m, s, force, "retry " + tag_of(m, s)):
                 fails += 1
         return fails
     if mname:
@@ -2896,23 +2920,14 @@ def cmd_retry(cfg, data, mname, jname, force, incl_scancel=False):
         if s is None:
             print("%s: 已全部完成。" % m["name"])
             return 0
-        if not s["has_incar"]:
-            print("%s: 步骤 %s 没有输入文件，请用 start（生成）或 rerun（推倒重来）。"
-                  % (m["name"], s["label"]))
-            return 1
-        ok = do_submit(cfg, t, m, s, force, gen_first=False,
-                       contcar_cp=step_cfg(t, s["name"], m).get("contcar_to_poscar", False),
-                       tag="retry " + tag_of(m, s))
+        ok = retry_submit(cfg, t, m, s, force, "retry " + tag_of(m, s))
         return 0 if ok else 1
     for t in data["types"]:
         for m in t["materials"]:
             s = m["active"]
             if s is None or not _retryable(s):
                 continue
-            ok = do_submit(cfg, t, m, s, force, gen_first=False,
-                           contcar_cp=step_cfg(t, s["name"], m).get("contcar_to_poscar", False),
-                           tag="retry " + tag_of(m, s))
-            if not ok:
+            if not retry_submit(cfg, t, m, s, force, "retry " + tag_of(m, s)):
                 fails += 1
     return fails
 
@@ -2944,7 +2959,20 @@ def step_targets(data, jname):
     return out
 
 
-def cmd_rerun(cfg, data, mname, jname, yes, force=False):
+def cmd_rerun(cfg, data, mname, jname, yes, force=False, from_skill=False):
+    """rerun = scancel -> rm -rf 步骤目录 -> 重新生成 -> 重新提交。
+    from_skill=True（--from-skill）：忽略 project_setting/ 与 材料/<技能>/ 下的
+    模板与 step.conf，只用 skill 库的出厂版本生成（hpc.yaml / setting.yaml 等
+    项目配置仍然生效，否则连队列和账号都对不上）。"""
+    global _SKILL_ONLY
+    _SKILL_ONLY = bool(from_skill)
+    try:
+        return _cmd_rerun(cfg, data, mname, jname, yes, force)
+    finally:
+        _SKILL_ONLY = False
+
+
+def _cmd_rerun(cfg, data, mname, jname, yes, force=False):
     fails = 0
     if jname and not mname:  # v3.11：跨材料只 rerun 指定步骤
         tgts = step_targets(data, jname)
@@ -3058,18 +3086,24 @@ def cmd_step_init(cfg, data, proj, job, force):
     t, m = find_material(data, proj)
     s = find_step(m, job)
     tag = "init %s[%s|%s]" % (m["name"], m["tt"], s["label"])
-    if s["kind"] == "OK":
-        print("%s: 该步骤已完成，无需操作。" % tag)
+    if s["kind"] == "OK" and not force:
+        print("%s: 该步骤已完成，无需操作（要强制重新生成输入加 -f）。" % tag)
         return 0
     if s.get("job"):
-        print("%s: 已有作业 %s(%s)，不可 init。" % (tag, s["job"]["id"],
-                                                   s["job"]["state"]))
-        return 1
+        if not force:
+            print("%s: 已有作业 %s(%s)。要杀掉重新生成请加 -f。"
+                  % (tag, s["job"]["id"], s["job"]["state"]))
+            return 1
+        if not kill_if_queued(cfg, s, True, tag):   # v1.9：-f 自动 scancel
+            return 1
+        s = dict(s)
+        s["job"] = None
     if not guard_predecessors(m, s, force):
         return 1
     if s["has_incar"] and not force:
         print("%s: 输入文件已存在（%s）。检查后直接 tf -p %s -j %s start 提交；"
-              "要推倒重生成用 rerun。" % (tag, s["dir"], proj, job))
+              "要覆盖重新生成加 -f，要连目录一起删掉重来用 rerun。"
+              % (tag, s["dir"], proj, job))
         return 0
     sc = step_cfg(t, s["name"], m)
     ok, out = remote_gen(cfg, t, m, s["name"])
@@ -3367,7 +3401,7 @@ def cmd_fetch(cfg, data, mname, all_files=False):
     return fails
 
 
-def cmd_init(cfg, types, proj, name=None, tt=None):
+def cmd_init(cfg, types, proj, name=None, tt=None, force=False):
     """初始化项目配置。
     -p 指定材料 → 只初始化其项目目录（名含 / 取上一级，如 C20/qHPC20 → C20/）；
     不带 -p → 当前目录下所有项目批量初始化（cwd 下一层就是材料目录时，
@@ -3397,11 +3431,11 @@ def cmd_init(cfg, types, proj, name=None, tt=None):
             print("错误：本地没有找到项目 %s（确认 local_root 下有带 POSCAR 的目录）。"
                   % proj)
             return 1
-        return _init_one(cfg, types, hit["lpath"], name, tt=tt)  # 材料级 project_setting
+        return _init_one(cfg, types, hit["lpath"], name, tt=tt, force=force)  # 材料级 project_setting
     import glob as _glob
     cwd = os.getcwd()
     if os.path.isfile(os.path.join(cwd, "POSCAR")):
-        return _init_one(cfg, types, cwd, name, tt=tt)  # cwd 本身是材料目录
+        return _init_one(cfg, types, cwd, name, tt=tt, force=force)  # cwd 本身是材料目录
     matdirs = sorted({os.path.dirname(p)
                       for pat in ("*/POSCAR", "*/*/POSCAR", "*/*/*/POSCAR")
                       for p in _glob.glob(os.path.join(cwd, pat))})
@@ -3435,17 +3469,17 @@ def cmd_init(cfg, types, proj, name=None, tt=None):
                 print("== %s == 已初始化，跳过" % os.path.relpath(d, cwd))
                 continue
             print("== %s ==" % os.path.relpath(d, cwd))
-            fails += _init_one(cfg, types, d, None, tt=tt)   # 追加 -tt 技能段
+            fails += _init_one(cfg, types, d, None, tt=tt, force=force)   # 追加 -tt 技能段
             continue
         print("== %s ==" % os.path.relpath(d, cwd))
-        fails += _init_one(cfg, types, d, None, tt=tt)
+        fails += _init_one(cfg, types, d, None, tt=tt, force=force)
         done += 1
     if not fails:
         print("材料初始化就绪（新 %d 个）。tf 查看状态，tf start 全部开始。" % done)
     return fails
 
 
-def _init_one(cfg, types, target, name=None, tt=None):
+def _init_one(cfg, types, target, name=None, tt=None, force=False):
     """在 target 目录生成 project_setting/（tf_<项目名>.yaml + setting.yaml +
     hpc.yaml + 映射模板）。已存在的文件不覆盖；项目配置名全局唯一，重复即报错。"""
     cands = [tt for tt in types if tt.get("local_root")]
@@ -3628,16 +3662,25 @@ def _init_one(cfg, types, target, name=None, tt=None):
                 if not _fn.endswith((".tpl", ".conf")):
                     continue
                 _s, _d = os.path.join(_sdir, _fn), os.path.join(_ddir, _fn)
-                if not os.path.isfile(_s) or os.path.exists(_d):
+                if not os.path.isfile(_s):
                     continue
+                if os.path.exists(_d):
+                    if not force:
+                        continue
+                    if _same_file(_s, _d):
+                        continue
+                    shutil.copyfile(_d, _d + ".bak")   # v1.9：-f 覆盖前先备份
+                    print("  备份 %s -> %s.bak" % (_d, os.path.basename(_d)))
                 os.makedirs(_ddir, exist_ok=True)
                 shutil.copyfile(_s, _d)
                 _copied += 1
         if _copied:
-            print("已复制 %d 个模板/配置 -> %s/（按步骤分子目录；改这里只影响本材料）"
-                  % (_copied, _tdst))
+            print("已%s %d 个模板/配置 -> %s/（按步骤分子目录；改这里只影响本材料）"
+                  % ("覆盖" if force else "复制", _copied, _tdst))
         else:
-            print("templates 就绪：%s/（已存在，未覆盖）" % _tdst)
+            print("templates 就绪：%s/（%s）"
+                  % (_tdst, "与 skill 出厂版一致" if force else
+                     "已存在，未覆盖；要用 skill 出厂版刷新加 -f"))
     # v1.2：技能开 skill_subdir 时本地建技能子目录（本地镜像超算结构：
     # 材料/<技能>/{result,log} ↔ 超算 work/材料/<技能>/stepN）
     if (t or {}).get("skill_subdir"):
@@ -4614,6 +4657,8 @@ def main():
     p.add_argument("--dry-run", dest="dry", action="store_true",
                    help="migrate-subdir 只打印迁移计划，不执行")
     p.add_argument("-clean", "--clean", dest="clean", action="store_true")
+    p.add_argument("--from-skill", dest="from_skill", action="store_true",
+                   help="rerun：忽略项目侧模板/step.conf，只用 skill 库出厂版生成")
     p.add_argument("--set", dest="sets", action="append", metavar="节.键=值",
                    help="conf：改本步 step.conf（如 --set incar.EDIFF=1E-6；"
                         "值留空=删除该键）")
@@ -4675,7 +4720,8 @@ def main():
 
     if cmd == "init" and not a.job:  # 项目配置初始化：纯本地，不连超算
         sys.exit(cmd_init(cfg, types, a.proj, tt=a.tt,
-                          name=(mat_toks[0] if mat_toks else root)))
+                          name=(mat_toks[0] if mat_toks else root),
+                          force=a.force))
 
     if cmd == "auto":   # v1.5：一键开关 auto_advance（纯本地改 tf.yaml）
         sys.exit(cmd_auto(cfg, mat_toks[0] if mat_toks else None))
@@ -4829,7 +4875,8 @@ def main():
                     fails += cmd_retry(cfg, data, pj, jb, a.force,
                                        incl_scancel=incl_sc)
                 elif cmd == "rerun":
-                    fails += cmd_rerun(cfg, data, pj, jb, a.yes, a.force)
+                    fails += cmd_rerun(cfg, data, pj, jb, a.yes, a.force,
+                                       from_skill=a.from_skill)
                 elif cmd == "fetch":
                     fails += cmd_fetch(cfg, data, pj, all_files=a.all_files)
         if fails:

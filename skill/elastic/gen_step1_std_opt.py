@@ -36,6 +36,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from dim_common import (AXIS_NAMES, detect_dimension, force_kz1,  # noqa: E402
                         resolve_tpl)
+import stepconf  # noqa: E402
 
 # =====================================================================
 #                           用户配置区
@@ -44,8 +45,14 @@ from dim_common import (AXIS_NAMES, detect_dimension, force_kz1,  # noqa: E402
 # 结构优化泛函，三选一：
 #   "pbe-d3" : PBE + DFT-D3(BJ)，自动写入 GGA=PE、IVDW=12
 #   "pbesol" : PBEsol，不启用经验色散修正，自动写入 GGA=PS
-#   "pbe"    : 纯 PBE，无色散修正，自动写入 GGA=PE
-FUNC = "pbesol"
+#   "pbe"    : 纯 PBE，无色散修正，写入 GGA=PE
+# 【不要改这里】真正生效的值来自项目的 step.conf：
+#     <材料>/<技能>/project_setting/templates/step.conf 的  [params] FUNC =
+#   "auto" 则嗅探 incar_*.tpl 里写死的 GGA/IVDW 反推，都没写就用下面的默认值。
+# 本脚本每次 gen 都被 tf 从 skill 库覆盖推送，改这里对单个项目无效。
+# 查看/修改：  tf -tt <技能> -p <材料> -j 1 conf [--set params.FUNC=pbe-d3]
+FUNC_DEFAULT = "pbesol"
+FUNC = FUNC_DEFAULT      # main() 里按 step.conf 解析后重新赋值
 
 # VASPKIT 设置
 RUN_VASPKIT = True
@@ -239,12 +246,69 @@ FUNC_MAP = {
 # 本脚本能填充的全部占位符（模板里出现才填，不出现就跳过）
 KNOWN_PLACEHOLDERS = {"SYSTEM", "ENCUT", "GGA", "VDW_LINE", "JOBNAME"}
 
+# step.conf 的 [params] 里本脚本认识的键 -> (默认值, 类型)
+CONF_SPEC = {
+    "FUNC": (FUNC_DEFAULT, "str"),
+}
+
+
+def sniff_func_from_tpl(tpl_path: Path):
+    """FUNC=auto 时：从 incar 模板里【写死的】GGA/IVDW 反推泛函；推不出返回 None。
+    模板里写的是 GGA = {{GGA}} 占位符（正常情况）时也返回 None。"""
+    values = {}
+    for line in Path(tpl_path).read_text(encoding="utf-8-sig").splitlines():
+        s = line.strip()
+        if not s or s.startswith(("#", "!")):
+            continue
+        for mark in ("#", "!"):
+            if mark in s:
+                s = s.split(mark, 1)[0].strip()
+        for part in s.split(";"):
+            if "=" not in part:
+                continue
+            k, v = part.split("=", 1)
+            k, v = k.strip().upper(), v.strip()
+            if "{{" in v:            # 占位符，等本脚本填，不算"写死"
+                continue
+            values[k] = v
+    gga = values.get("GGA", "").upper().strip("\"'")
+    ivdw = values["IVDW"].split()[0] if values.get("IVDW") else None
+    if not gga:
+        return None
+    for name, spec in FUNC_MAP.items():
+        if spec["GGA"] == gga and spec["IVDW"] == ivdw:
+            return name
+    sys.exit("[ERROR] %s 里写死的 GGA=%s、IVDW=%s 不属于任何受支持泛函（%s）。\n"
+             "        请在 step.conf 的 [params] 里显式写 FUNC =。"
+             % (Path(tpl_path).name, gga, ivdw or "(none)",
+                ", ".join(FUNC_MAP)))
+
+
+def resolve_func(incar_tpl: Path, step_name=None):
+    """返回 (func, 来源说明)。优先级：step.conf 显式值 > 模板反推 > 脚本默认值。"""
+    if not (Path.cwd() / stepconf.CONF_NAME).is_file():
+        want, where = FUNC_DEFAULT, "脚本默认值（无 step.conf，老材料兼容）"
+    else:                            # 有文件就必须解析成功，错误一律抛出
+        conf = stepconf.load(CONF_SPEC, step_name)
+        want, where = conf["FUNC"], stepconf.CONF_NAME
+    want = (want or FUNC_DEFAULT).strip().lower()
+    if want != "auto":
+        if want not in FUNC_MAP:
+            sys.exit("[ERROR] %s 的 FUNC=%r 无效，只允许：auto, %s"
+                     % (where, want, ", ".join(FUNC_MAP)))
+        return want, where
+    sniffed = sniff_func_from_tpl(incar_tpl)
+    if sniffed:
+        return sniffed, "FUNC=auto -> 由 %s 写死的 GGA/IVDW 反推" % incar_tpl.name
+    return FUNC_DEFAULT, "FUNC=auto -> 模板未写死，取脚本默认值"
+
 
 def validate_user_config():
     """检查脚本顶部的用户配置。"""
     if FUNC not in FUNC_MAP:
         allowed = ", ".join(repr(x) for x in FUNC_MAP)
-        sys.exit(f"[ERROR] FUNC={FUNC!r} 无效，只允许：{allowed}")
+        sys.exit(f"[ERROR] FUNC={FUNC!r} 无效，只允许：{allowed}\n"
+                 f"        改 step.conf 的 [params] FUNC =，不要改本脚本。")
 
     if MANUAL_ENCUT is not None:
         try:
@@ -865,7 +929,6 @@ def build_two_stage_2d(outdir: Path, finish_ibrion1: bool):
 
 
 def main():
-    validate_user_config()
     cwd = Path.cwd()
 
     if not (cwd / "POSCAR").exists():
@@ -897,6 +960,12 @@ def main():
         print("[WARN] 2D 体系但只找到了无后缀 incar.tpl —— 请确认它就是 2D 模板"
               "（含 c 轴约束），建议改名为 incar_2d.tpl 并补一套 *_3d.tpl")
 
+    # ---- 泛函：step.conf 说了算（见文件顶部 FUNC_DEFAULT 的说明）----
+    global FUNC
+    FUNC, func_src = resolve_func(incar_tpl, "step1_std_opt")
+    validate_user_config()
+    print("[..] 泛函：%s（来源：%s）" % (FUNC, func_src))
+
     label, formula = read_poscar_identity(cwd / "POSCAR")
     params = build_params(label)
 
@@ -905,7 +974,6 @@ def main():
 
     print(f"[..] 结构标签：{label}")
     print(f"[..] 化学式：{formula}")
-    print(f"[..] 泛函：{FUNC}")
     print(f"[..] GGA={params['GGA']}，IVDW={FUNC_MAP[FUNC]['IVDW'] or 'off'}")
     print(f"[..] 输出目录：{outdir}")
 
