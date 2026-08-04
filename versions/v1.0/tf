@@ -647,6 +647,11 @@ template_map:
 
 DEFAULT_PROJECT_SETTING = """\
 # 项目设置（就近优先：从材料目录向上找最近的 project_setting）
+# v1.9.9：新建的技能默认【不参与自动推进】——init 只是把配置建好，
+# 不等于你想现在就算它。想让本技能跟着 auto_advance 自动开算，改成 true：
+#     tf -tt <技能> -p <材料> auto on      （或直接把下面这行改 true）
+# 手动 tf start / retry / rerun 不受本开关影响，随时可以单独跑。
+auto_advance: false
 # 路径占位符：{matdir}=材料目录 {mat}=材料名 {root}=本地项目根
 base_dir: "{matdir}"
 result_dir: "{matdir}/result"     # tf fetch 回拉目的地（每步一个子目录）
@@ -1903,6 +1908,19 @@ def _cell_word(s):
     return "waiting"  # TODO（输入就绪）/ PREP（未生成）/ 被前序阻塞
 
 
+# 第二行只放「任务号 + 简短原因」。各家集群的 Reason 字符串五花八门
+# （Slurm 自带几十种，换个调度器又是另一套），不做映射表，一律去括号后截断。
+REASON_MAX = 8      # 原因最多显示几个字符，超出直接截掉
+
+
+def _short_reason(info, limit=REASON_MAX):
+    """squeue/qstat 给的原因：去外层括号、压掉空白、截断到 limit 个字符。"""
+    r = " ".join(str(info or "").split())
+    while len(r) >= 2 and r[0] == "(" and r[-1] == ")":
+        r = " ".join(r[1:-1].split())
+    return r[:limit]
+
+
 def _cell_info(s):
     """步骤第二行：running → "节点 任务号 已跑时长"；pd → "任务号 (原因)"；否则 -。"""
     if s.get("plot"):
@@ -1915,7 +1933,7 @@ def _cell_info(s):
         return "-"
     if j["state"] in ("R", "CG", "CF"):
         return " ".join(x for x in (j.get("info"), j["id"], j.get("time")) if x)
-    reason = (j.get("info") or "").strip()
+    reason = _short_reason(j.get("info"))
     return "%s (%s)" % (j["id"], reason) if reason else j["id"]
 
 
@@ -3199,7 +3217,7 @@ def cmd_step_init(cfg, data, proj, job, force):
     return 0
 
 
-def cmd_clean(cfg, data, proj, job, yes):
+def cmd_clean(cfg, data, proj, job, yes, purge_config=False):
     """删除生成物，回到 PREP（材料级保留 POSCAR）。
     无 -p      → 全部材料；-p 材料 → 该材料；-p 体系目录（如 C20）→ 其下所有材料；
     -p -j      → 单个步骤目录；-j 不带 -p → 全部材料的该步骤目录。
@@ -3277,12 +3295,12 @@ def cmd_clean(cfg, data, proj, job, yes):
             for k, m in mats]
     njob = sum(len(j) for _, _, j in todo)
     if not yes:
-        ans = input("clean %d 个材料（删除全部生成物%s，"
-                    "只留 POSCAR%s）？ [y/N] "
+        ans = input("clean %d 个材料（删除全部生成物，只留 POSCAR%s%s）？ [y/N] "
                     % (len(todo),
-                       "和材料级 project_setting" if len(data["types"]) > 1
-                       else "；配置里还有其他技能段时只移除本技能段",
-                       "，并取消 %d 个作业" % njob if njob else "")
+                       "，并取消 %d 个作业" % njob if njob else "",
+                       "；project_setting 也一并删除，重算需 tf init"
+                       if purge_config else
+                       "；project_setting 保留，可直接重算")
                     ).strip().lower()
         if ans not in ("y", "yes"):
             print("已取消操作。")
@@ -3322,7 +3340,12 @@ def cmd_clean(cfg, data, proj, job, yes):
             os.path.dirname(_psr) == os.path.realpath(lp) or
             os.path.dirname(os.path.dirname(_psr)) == os.path.realpath(lp)))
         kept_note = ""
-        if own_ps:
+        if own_ps and not purge_config:
+            # v1.9.7：默认保留 project_setting。它是手写的配置，删了不能自动恢复，
+            # 而且删光之后连材料都发现不到（local_root 就写在这些 tf_*.yaml 里），
+            # 只能靠在项目根裸跑 tf init 兜回来。要连配置一起清用 --purge-config。
+            kept_note = "，project_setting 保留（要连配置一起删加 --purge-config）"
+        elif own_ps:
             f0s = glob.glob(os.path.join(ps, "tf_*.yaml"))
             remaining, removed = [], False
             if f0s:
@@ -3483,7 +3506,7 @@ def cmd_fetch(cfg, data, mname, all_files=False):
 
 def cmd_init(cfg, types, proj, name=None, tt=None, force=False, yes=False):
     """初始化项目配置。
-    -p 指定材料 → 只初始化其项目目录（名含 / 取上一级，如 C20/qHPC20 → C20/）；
+    -p 指定材料 → 只初始化这些材料（多个用逗号分隔，如 -p Mg2C60,Mo2S3）；
     不带 -p → 当前目录下所有项目批量初始化（cwd 下一层就是材料目录时，
     cwd 本身作为一个项目）。位置参数可指定项目名（tf init 名字）。
     不带 -tt 时对【全部技能】各建一套 project_setting；动手前先列计划并确认（-y 跳过）。"""
@@ -3493,8 +3516,9 @@ def cmd_init(cfg, types, proj, name=None, tt=None, force=False, yes=False):
         return 1
     if not yes and not tt:   # 明确指定了 -tt 就是明确选择，不再确认
         print("tf init 将为下列技能各建一套项目配置：%s" % "、".join(_keys))
-        print("范围：%s" % (("材料 " + proj) if proj else
-                           "当前目录下所有材料（%s）" % os.getcwd()))
+        print("范围：%s" % (("材料 " + "、".join(
+            x.strip() for x in str(proj).split(",") if x.strip())) if proj
+            else "当前目录下所有材料（%s）" % os.getcwd()))
         print("init 只在本地生成配置和模板，不连超算、不提交任何计算；")
         print("要开算是之后的 tf start。已存在的文件不覆盖（除非加 -f）。")
         print("（只想初始化其中一个技能就加 -tt，如 tf -tt band init）")
@@ -3506,31 +3530,23 @@ def cmd_init(cfg, types, proj, name=None, tt=None, force=False, yes=False):
             print("已取消操作。")
             return 1
     if proj:
-        hit = None
-        # v1.0：材料定位与类型无关——-tt 过滤后 types 可能只剩骨架甚至为空
-        # （如给 band 项目追加 elastic 段），先按过滤列表找、找不到退回全量；
-        # 循环变量不得叫 tt（会覆盖参数，曾致 TypeError: unhashable 'dict'）
-        tries = [types]
-        if tt:
-            tries.append(get_types(cfg, tt=None))
-        for tlist in tries:
-            for t0 in tlist:
-                if not t0.get("local_root"):
-                    continue
-                _r, mats = discover_local(t0["local_root"])
-                for m in mats:
-                    if m["name"] == proj or os.path.basename(m["name"]) == proj:
-                        hit = m
-                        break
-                if hit:
-                    break
-            if hit:
-                break
-        if not hit:
-            print("错误：本地没有找到项目 %s（确认 local_root 下有带 POSCAR 的目录）。"
-                  % proj)
-            return 1
-        return _init_one(cfg, types, hit["lpath"], name, tt=tt, force=force)  # 材料级 project_setting
+        # v1.9.8：-p 支持逗号分隔的多个材料（-p Mg2C60,Mo2S3）；定位交给
+        # resolve_mat_dir，正常发现失败时会扫盘兜底。
+        wants = [x.strip() for x in str(proj).split(",") if x.strip()]
+        fails = 0
+        for w in wants:
+            lp = resolve_mat_dir(cfg, types, tt, w)
+            if not lp:
+                print("错误：找不到材料 %s —— 当前目录、project_roots 和各技能的 "
+                      "local_root 下都没有同名的、带 POSCAR 的目录。" % w)
+                fails += 1
+                continue
+            if len(wants) > 1:
+                print("== %s ==" % w)
+            fails += _init_one(cfg, types, lp,
+                               name if len(wants) == 1 else None,
+                               tt=tt, force=force)
+        return fails
     import glob as _glob
     cwd = os.getcwd()
     if os.path.isfile(os.path.join(cwd, "POSCAR")):
@@ -3576,6 +3592,50 @@ def cmd_init(cfg, types, proj, name=None, tt=None, force=False, yes=False):
     if not fails:
         print("材料初始化就绪（新 %d 个）。tf 查看状态，tf start 全部开始。" % done)
     return fails
+
+
+def resolve_mat_dir(cfg, types, tt, want, cwd=None):
+    """按名字定位材料的本地目录，找不到返回 None。
+    先走正常发现（local_root -> discover_local）；再扫盘兜底——clean 删光
+    project_setting 后 local_root 也跟着没了，只能靠扫盘自举回来。"""
+    tries = [types or []]
+    if tt:
+        try:
+            tries.append(get_types(cfg, tt=None, quiet=True))
+        except SystemExit:
+            pass
+    for tlist in tries:
+        for t0 in tlist:
+            if not t0.get("local_root"):
+                continue
+            try:
+                _r, mats = discover_local(t0["local_root"])
+            except Exception:
+                continue
+            for m in mats:
+                if m["name"] == want or os.path.basename(m["name"]) == want:
+                    return m["lpath"]
+    roots = [cwd or os.getcwd()]
+    for r in (cfg.get("project_roots") or []):
+        roots.append(str(r))
+    for t0 in (types or []):
+        if t0.get("local_root"):
+            roots.append(t0["local_root"])
+    seen = set()
+    for r in roots:
+        r = os.path.abspath(os.path.expanduser(str(r)))
+        if r in seen or not os.path.isdir(r):
+            continue
+        seen.add(r)
+        if os.path.basename(r) == want and os.path.isfile(
+                os.path.join(r, "POSCAR")):
+            return r
+        for pat in ("*/POSCAR", "*/*/POSCAR", "*/*/*/POSCAR"):
+            for pp in sorted(glob.glob(os.path.join(r, pat))):
+                d = os.path.dirname(pp)
+                if os.path.relpath(d, r) == want or os.path.basename(d) == want:
+                    return d
+    return None
 
 
 def skill_keys(cfg, tt=None):
@@ -4029,6 +4089,68 @@ def _list_pkg_clusters():
             out += [f[:-5] for f in os.listdir(d)
                     if f.endswith(".yaml") and f != "tf_default.yaml"]
     return ", ".join(sorted(set(out))) or "（无）"
+
+
+def cmd_auto_project(cfg, types, proj, tt, arg):
+    """v1.9.9：tf [-tt X] -p 材料 auto on|off —— 改该技能项目的
+    project_setting/setting.yaml，不动全局 tf.yaml。"""
+    keys = skill_keys(cfg, tt)
+    wants = [x.strip() for x in str(proj).split(",") if x.strip()]
+    if arg is None:
+        for w in wants:
+            for k in keys:
+                lp = resolve_mat_dir(cfg, types, k, w)
+                f = _proj_setting_path(lp, k) if lp else None
+                cur = (_load_yaml_file(f).get("auto_advance")
+                       if f and os.path.isfile(f) else None)
+                print("  %-14s %-9s %s" % (w, k, "（无配置）" if not f or
+                      not os.path.isfile(f) else
+                      ("开" if cur is not False else "关")))
+        return 0
+    a = str(arg).strip().lower()
+    if a not in ("on", "off", "1", "0", "true", "false", "开", "关"):
+        print("错误：auto 只接受 on/off（收到 %r）。" % arg)
+        return 1
+    on = a in ("on", "1", "true", "开")
+    fails = 0
+    for w in wants:
+        for k in keys:
+            lp = resolve_mat_dir(cfg, types, k, w)
+            f = _proj_setting_path(lp, k) if lp else None
+            if not f or not os.path.isfile(f):
+                print("  %s[%s]：还没有 project_setting，先 tf -tt %s -p %s init"
+                      % (w, k, k, w))
+                fails += 1
+                continue
+            _set_yaml_bool(f, "auto_advance", on)
+            print("  %s[%s]：auto_advance = %s" % (w, k, "true" if on else "false"))
+    if not cfg.get("auto_advance"):
+        print("注意：全局 auto_advance 还是关的，本开关要配合 tf auto on 才生效。")
+    return fails
+
+
+def _proj_setting_path(lpath, tkey):
+    """材料目录下该技能的 setting.yaml 路径（技能子目录优先，回落材料级）。"""
+    if not lpath:
+        return None
+    a = os.path.join(lpath, str(tkey), "project_setting", "setting.yaml")
+    if os.path.isfile(a):
+        return a
+    return os.path.join(lpath, "project_setting", "setting.yaml")
+
+
+def _set_yaml_bool(path, key, on):
+    """就地改（或追加）一个顶层布尔行，其余内容原样保留。"""
+    with open(path, encoding="utf-8") as f:
+        lines = f.readlines()
+    for i, ln in enumerate(lines):
+        if re.match(r"^%s\s*:" % re.escape(key), ln):
+            lines[i] = "%s: %s\n" % (key, "true" if on else "false")
+            break
+    else:
+        lines.append("%s: %s\n" % (key, "true" if on else "false"))
+    with open(path, "w", encoding="utf-8") as f:
+        f.writelines(lines)
 
 
 def cmd_auto(cfg, arg):
@@ -4808,6 +4930,8 @@ def main():
     p.add_argument("--dry-run", dest="dry", action="store_true",
                    help="migrate-subdir 只打印迁移计划，不执行")
     p.add_argument("-clean", "--clean", dest="clean", action="store_true")
+    p.add_argument("--purge-config", dest="purge_config", action="store_true",
+                   help="clean：连 project_setting 一起删（默认保留，重算需 tf init）")
     p.add_argument("--from-skill", dest="from_skill", action="store_true",
                    help="rerun：忽略项目侧模板/step.conf，只用 skill 库出厂版生成")
     p.add_argument("--set", dest="sets", action="append", metavar="节.键=值",
@@ -4871,12 +4995,18 @@ def main():
     # 提示，这里放行，按空表/无目标处理（不算错误）。
 
     if cmd == "init" and not a.job:  # 项目配置初始化：纯本地，不连超算
+        if a.proj and mat_toks:
+            print("提示：多个材料要用逗号分隔，如  -p %s,%s"
+                  % (a.proj, ",".join(mat_toks)))
         sys.exit(cmd_init(cfg, types, a.proj, tt=a.tt,
                           name=(mat_toks[0] if mat_toks else root),
                           force=a.force, yes=a.yes))
 
     if cmd == "auto":   # v1.5：一键开关 auto_advance（纯本地改 tf.yaml）
-        sys.exit(cmd_auto(cfg, mat_toks[0] if mat_toks else None))
+        _arg = mat_toks[0] if mat_toks else None
+        if a.proj:      # v1.9.9：带 -p 就只改这些材料/技能的 setting.yaml
+            sys.exit(cmd_auto_project(cfg, types, a.proj, a.tt, _arg))
+        sys.exit(cmd_auto(cfg, _arg))
 
     if cmd == "adopt":  # v1.5：接管手工整理的技能子目录（内部自做采集）
         sys.exit(cmd_adopt(cfg, types,
@@ -4956,7 +5086,8 @@ def main():
         fails = 0
         for pj in (projs or [None]):
             for jb in jobs:
-                fails += 0 if cmd_clean(cfg, data, pj, jb, a.yes) == 0 else 1
+                fails += 0 if cmd_clean(cfg, data, pj, jb, a.yes,
+                                        purge_config=a.purge_config) == 0 else 1
         sys.exit(0 if fails == 0 else 1)
 
     if cmd == "init":  # -p MAT -j STEP init：只生成该步骤输入，不提交

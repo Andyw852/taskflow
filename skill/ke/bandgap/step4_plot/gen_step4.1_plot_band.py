@@ -624,7 +624,7 @@ def main():
                   "reason": f"缺少 {step4 / name} —— step4 必须先跑完"}, 40)
 
     # 1) 搭建输出目录：拷贝输入（自包含，之后所有读写都在这里）
-    out.mkdir(exist_ok=True)
+    out.mkdir(parents=True, exist_ok=True)   # ke：OUT_DIR 是嵌套路径
     copied = []
     copy_names = (["EIGENVAL", "POSCAR", "INCAR", "KPOINTS", "workflow_method.txt"]
                   if merge else COPY_INPUTS)   # 拼接模式不拷各段的大 vasprun/部分 KPOINTS_OPT

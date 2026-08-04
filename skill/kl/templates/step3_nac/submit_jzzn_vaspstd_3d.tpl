@@ -11,11 +11,6 @@
 #SBATCH --output=queue.out
 #SBATCH --error=queue.err
 #SBATCH --qos=premium
-# --time 不能超过 QOS 的 MaxWall，超了作业会永远 PD 在
-# QOSMaxWallDurationPerJobLimit。先查上限再改：
-#     sacctmgr show qos format=Name,MaxWall,MaxTRESPerJob
-# 不写这一行 = 直接吃 QOS 上限（jzzn 的 premium 是 24h）。
-#SBATCH --time=24:00:00
 
 cd $SLURM_SUBMIT_DIR
 

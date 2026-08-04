@@ -249,6 +249,13 @@ KNOWN_PLACEHOLDERS = {"SYSTEM", "ENCUT", "GGA", "VDW_LINE", "JOBNAME"}
 # step.conf 的 [params] 里本脚本认识的键 -> (默认值, 类型)
 CONF_SPEC = {
     "FUNC": (FUNC_DEFAULT, "str"),
+    # 分段弛豫看门狗：OUTCAR 连续这么多分钟不增长就判定 VASP 卡死，
+    # 杀掉本段并存档退出（0 = 关闭看门狗）。MPI 挂死时能省下整个墙钟。
+    # 阈值必须明显大于本体系最慢的一个离子步（看 OUTCAR 的 LOOP+ real time），
+    # 否则会误杀还在正常跑的作业。60 min 对多数体系够宽；
+    # 单步就要几十分钟的大胞（如 elastic 的形变胞）请按材料调大：
+    #     tf -tt <技能> -p <材料> -j <步骤> conf --set params.STALL_MINUTES=180
+    "STALL_MINUTES": (60, "int"),
 }
 
 
@@ -284,13 +291,22 @@ def sniff_func_from_tpl(tpl_path: Path):
                 ", ".join(FUNC_MAP)))
 
 
-def resolve_func(incar_tpl: Path, step_name=None):
-    """返回 (func, 来源说明)。优先级：step.conf 显式值 > 模板反推 > 脚本默认值。"""
+def load_step_conf(step_name=None):
+    """读一次 step.conf，返回 params 字典；没有该文件时全部取脚本默认值。"""
     if not (Path.cwd() / stepconf.CONF_NAME).is_file():
+        return {k: v for k, (v, _t) in CONF_SPEC.items()}, None
+    conf = stepconf.load(CONF_SPEC, step_name)
+    return dict(conf.params), stepconf.CONF_NAME
+
+
+def resolve_func(incar_tpl: Path, step_name=None, params=None, src=None):
+    """返回 (func, 来源说明)。优先级：step.conf 显式值 > 模板反推 > 脚本默认值。"""
+    if params is None:
+        params, src = load_step_conf(step_name)
+    if src is None:
         want, where = FUNC_DEFAULT, "脚本默认值（无 step.conf，老材料兼容）"
-    else:                            # 有文件就必须解析成功，错误一律抛出
-        conf = stepconf.load(CONF_SPEC, step_name)
-        want, where = conf["FUNC"], stepconf.CONF_NAME
+    else:
+        want, where = params.get("FUNC"), src
     want = (want or FUNC_DEFAULT).strip().lower()
     if want != "auto":
         if want not in FUNC_MAP:
@@ -872,7 +888,94 @@ def extract_vasp_cmd(submit_text):
     return None
 
 
-def build_two_stage_2d(outdir: Path, finish_ibrion1: bool):
+RUN_RELAX_HELPERS = r"""
+# --------------------------------------------------------------------
+# 工具函数（gen_step1 生成，勿手改；改请改项目 step.conf / 模板后重新 gen）
+# --------------------------------------------------------------------
+_ARCHIVE="OUTCAR OSZICAR CONTCAR vasprun.xml XDATCAR"
+
+# 看门狗：VASP 挂死（MPI 死锁、IB 掉线）时 OUTCAR 会停止增长，
+# 但作业照样占着节点直到墙钟耗尽。这里发现停滞就主动杀掉本段。
+_watchdog () {
+    local pid="$1" last=-1 now stall=0
+    [ "${STALL_MIN}" -le 0 ] && return 0
+    while kill -0 "${pid}" 2>/dev/null; do
+        sleep 60
+        now=$(stat -c %s OUTCAR 2>/dev/null || echo 0)
+        if [ "${now}" = "${last}" ]; then
+            stall=$((stall + 1))
+            if [ "${stall}" -ge "${STALL_MIN}" ]; then
+                echo "[run_relax][watchdog] OUTCAR 已 ${STALL_MIN} 分钟无增长，判定卡死，终止本段" >&2
+                kill -TERM "${pid}" 2>/dev/null || true
+                sleep 30
+                kill -KILL "${pid}" 2>/dev/null || true
+                return 0
+            fi
+        else
+            stall=0
+        fi
+        last="${now}"
+    done
+}
+
+_contcar_ok () {
+    [ -s CONTCAR ] || return 1
+    [ "$(wc -l < CONTCAR)" -ge 8 ] || return 1
+    return 0
+}
+
+# _run_stage <tag> <INCAR 文件> <是否把 CONTCAR 传给下一段:1/0> <描述>
+_run_stage () {
+    local tag="$1" incar="$2" pass="$3" desc="$4" rc=0 vpid wpid f
+    if [ -f ".${tag}.done" ]; then
+        echo "[run_relax] ${desc} —— 已完成，跳过"
+        return 0
+    fi
+    # 本段上次跑了一半被杀：CONTCAR 完好就从它接着算，不从头再来
+    if [ -f ".${tag}.started" ] && _contcar_ok; then
+        echo "[run_relax] ${desc} —— 检测到上次中断，从 CONTCAR 续跑"
+        cp CONTCAR POSCAR
+    fi
+    : > ".${tag}.started"
+    echo "[run_relax] ${desc}"
+    cp "${incar}" INCAR
+
+    ${VASP_CMD} &
+    vpid=$!
+    _watchdog "${vpid}" &
+    wpid=$!
+    wait "${vpid}" || rc=$?
+    kill "${wpid}" 2>/dev/null || true
+    wait "${wpid}" 2>/dev/null || true
+
+    # 每段各存一份，否则下一段启动时 VASP 会把 OUTCAR/OSZICAR 覆盖掉，
+    # 出问题后连上一段跑了多久、有没有警告都查不到
+    for f in ${_ARCHIVE}; do
+        if [ -f "${f}" ]; then cp -f "${f}" "${f}.${tag}"; fi
+    done
+
+    if [ "${rc}" -ne 0 ]; then
+        echo "[run_relax] ${desc} 异常退出 (rc=${rc})，已存档 *.${tag}" >&2
+        return 1
+    fi
+    if ! grep -q "General timing and accounting" OUTCAR; then
+        echo "[run_relax] ${desc} 未正常收尾（OUTCAR 无 General timing）" >&2
+        return 1
+    fi
+    : > ".${tag}.done"
+    if [ "${pass}" = "1" ]; then
+        if ! _contcar_ok; then
+            echo "[run_relax] ${desc} 的 CONTCAR 缺失/残缺，无法接力下一段" >&2
+            return 1
+        fi
+        cp CONTCAR POSCAR
+    fi
+    return 0
+}
+"""
+
+
+def build_two_stage_2d(outdir: Path, finish_ibrion1: bool, stall_min: int = 60):
     """把 2D 单段 ISIF=3 的 INCAR 拆成多段，生成 run_relax.sh，并把 submit.sh 的
        VASP 执行行替换为 `bash run_relax.sh`。base = outdir/INCAR（已过 optcell 处理）。"""
     base = (outdir / "INCAR").read_text(encoding="utf-8")
@@ -904,19 +1007,29 @@ def build_two_stage_2d(outdir: Path, finish_ibrion1: bool):
             (outdir / f).unlink(missing_ok=True)
         return False
 
-    # 生成 run_relax.sh：逐段 cp INCAR -> 跑 VASP -> cp CONTCAR POSCAR
+    # 生成 run_relax.sh：逐段 cp INCAR -> 跑 VASP -> 存档 -> 校验 -> 传 CONTCAR
     lines = ["#!/bin/bash", "set -e",
              "# 2D 多段弛豫（gen_step1 生成）：ISIF=2 -> ISIF=3 -> IBRION=1 收尾",
-             "# VASP 执行命令取自 submit.sh，$SLURM_NTASKS 运行时展开", ""]
+             "# VASP 执行命令取自 submit.sh，$SLURM_NTASKS 运行时展开",
+             "#",
+             "# 断点续跑：每段完成写 .sN.done，重投时自动跳过已完成的段。",
+             "#   想强制从头重来： rm -f .s?.done .s?.started",
+             "# 分段存档：每段的 OUTCAR/OSZICAR/CONTCAR 另存为 *.sN，便于事后排查。",
+             "",
+             'VASP_CMD="%s"' % vasp_cmd,
+             "STALL_MIN=%d    # OUTCAR 停滞这么多分钟判定卡死（0=关）" % int(stall_min),
+             RUN_RELAX_HELPERS,
+             ""]
     for k, (fname, desc) in enumerate(stages):
-        lines.append(f'echo "[run_relax] {desc}"')
-        lines.append(f"cp {fname} INCAR")
-        lines.append(vasp_cmd)
-        if k < len(stages) - 1:
-            lines.append("cp CONTCAR POSCAR")
-        lines.append("")
-    lines.append('grep -q "reached required accuracy" OUTCAR '
-                 '&& echo RELAX_OK || echo RELAX_CHECK_NEEDED')
+        tag = "s%d" % (k + 1)
+        pas = "0" if k == len(stages) - 1 else "1"
+        lines.append('_run_stage %s %s %s "%s"' % (tag, fname, pas, desc))
+    lines.append("")
+    lines.append('if grep -q "reached required accuracy" OUTCAR; then')
+    lines.append('    echo RELAX_OK')
+    lines.append("else")
+    lines.append('    echo RELAX_CHECK_NEEDED')
+    lines.append("fi")
     (outdir / "run_relax.sh").write_text("\n".join(lines) + "\n",
                                          encoding="utf-8", newline="\n")
     (outdir / "run_relax.sh").chmod(0o755)
@@ -962,7 +1075,12 @@ def main():
 
     # ---- 泛函：step.conf 说了算（见文件顶部 FUNC_DEFAULT 的说明）----
     global FUNC
-    FUNC, func_src = resolve_func(incar_tpl, "step1_std_opt")
+    _conf_params, _conf_src = load_step_conf("step1_std_opt")
+    STALL_MINUTES = _conf_params.get("STALL_MINUTES")
+    if STALL_MINUTES is None:
+        STALL_MINUTES = CONF_SPEC["STALL_MINUTES"][0]
+    FUNC, func_src = resolve_func(incar_tpl, "step1_std_opt",
+                                  params=_conf_params, src=_conf_src)
     validate_user_config()
     print("[..] 泛函：%s（来源：%s）" % (FUNC, func_src))
 
@@ -1048,7 +1166,8 @@ def main():
         apply_cell_constraint_2d(outdir / "INCAR", outdir)
         # ---- 2D 分段弛豫：ISIF=2 -> ISIF=3 -> IBRION=1 收尾（3D 不做）----
         if TWO_STAGE_2D:
-            two_stage = build_two_stage_2d(outdir, FINISH_IBRION1)
+            two_stage = build_two_stage_2d(outdir, FINISH_IBRION1,
+                                           stall_min=STALL_MINUTES)
 
     heavy = sorted(set(symbols or []) & SOC_ELEMS)
     if heavy:

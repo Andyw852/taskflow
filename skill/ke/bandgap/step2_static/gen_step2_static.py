@@ -361,7 +361,7 @@ def main():
     items = parse_incar(incar_path)
     method = detect_method(items, step1 / METHOD_FILE)
     label = read_structure_label(struct)
-    step2.mkdir(exist_ok=True)
+    step2.mkdir(parents=True, exist_ok=True)   # ke：STEP2_DIR 是嵌套路径
 
     Path(step2 / "POSCAR").write_text(
         struct.read_text(encoding="utf-8-sig"), encoding="utf-8", newline="\n"
