@@ -1,0 +1,27 @@
+--- /tmp/tf_test3/versions/v1.0/tf	2026-08-05 07:41:13.500058698 +0000
++++ tf_fix	2026-08-05 07:53:57.872166326 +0000
+@@ -535,7 +535,14 @@
+             jobs_by_dir[j["workdir"]] = j
+ 
+     # 技能私有判据：源码随 payload 下发，在这里注册进 CHECKERS
++    # v1.10：多个技能可以共用公共池里的同一份 checks.py（skill.yaml 写
++    # checks: ../_common/checks_relax.py）——源码相同就只注册一次，
++    # 不再当成重名冲突；只有【不同源码抢同一个判据名】才报错。
++    _seen_src = {}
+     for _sk, _src in (cfg.get("extra_checks") or {}).items():
++        if _src in _seen_src:
++            continue
++        _seen_src[_src] = _sk
+         _ns = dict(globals())
+         try:
+             exec(compile(_src, "<skill:%s>" % _sk, "exec"), _ns)
+@@ -543,7 +550,8 @@
+             sys.exit("技能 %s 的 checks.py 执行失败：%s" % (_sk, _e))
+         for _n, _f in (_ns.get("CHECKERS") or {}).items():
+             if _n in CHECKERS:
+-                sys.exit("技能 %s 的判据名 %s 与已有判据冲突，请改名。" % (_sk, _n))
++                sys.exit("技能 %s 的判据名 %s 与已有判据冲突（同名但不是同一份 "
++                         "checks.py），请改名或改成共用公共池那一份。" % (_sk, _n))
+             CHECKERS[_n] = _f
+ 
+     _t1 = _time.time()

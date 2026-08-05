@@ -18,6 +18,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import kl_common as kc
+from dim_common import require_dim  # noqa: E402
 import stepconf
 
 OUTDIR = "step4_disp"
@@ -108,6 +109,8 @@ def main():
     meth = kc.read_method(prev / kc.METHOD_FILE)
     dim = (meth.get("DIM", "").lower() or kc.resolve_dim(out / "POSCAR")[0])
     _, vac_axis = kc.resolve_dim(out / "POSCAR", dim)
+    require_dim(dim, ('2d', '3d'), "step4_disp",
+                why="晶格热导需要声子群速度和布里渊区积分，孤立分子只有分立振动模式")
     func = conf["FUNC"] if conf["FUNC"] not in (None, "", "auto") \
         else meth.get("FUNC", "pbesol").lower()
     method = str(conf["METHOD"]).lower()

@@ -6,5 +6,6 @@ ssh_host: jzzn             # 该超算的 ssh 别名
 template_map:
   submit_std_2d.tpl: submit_jzzn_vaspstd_2d.tpl
   submit_std_3d.tpl: submit_jzzn_vaspstd_3d.tpl
+  submit_std_0d.tpl: submit_jzzn_vaspstd_0d.tpl
   submit_ncl_2d.tpl: submit_jzzn_vaspncl_2d.tpl
   submit_ncl_3d.tpl: submit_jzzn_vaspncl_3d.tpl

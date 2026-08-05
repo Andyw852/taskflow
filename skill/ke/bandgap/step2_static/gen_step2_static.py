@@ -31,7 +31,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from dim_common import force_kz1, resolve_dim, resolve_tpl, validate_poscar  # noqa: E402
+from dim_common import require_dim, force_kz1, resolve_dim, resolve_tpl, validate_poscar  # noqa: E402
 
 # step1 目录。"auto" = 自动找最后一个跑完的弛豫阶段：
 #   step1c_PBE_opt -> step1b_PBE_opt -> step1a_PBE_opt -> step1_PBE_opt（旧的单目录）
@@ -371,6 +371,8 @@ def main():
 
     # ---- 维度：优先继承 step1 workflow_method.txt 的 DIM=，缺失按结构判定 ----
     dim, dim_note = resolve_dim(step1 / METHOD_FILE, step2 / "POSCAR")
+    require_dim(dim, ('2d', '3d'), "step2_static",
+                why="静态自洽本身对分子成立，但本脚本的 KPOINTS 仍按固体网格生成；要跑 0D 请先照 band 的 gen_step2_static 补 Gamma 分支")
     submit_tpl = resolve_tpl(Path.cwd(), "submit_std", dim)
     print(f"[..] Dimension: {dim.upper()} — {dim_note}")
     print(f"[..] Submit template: {submit_tpl.name}")

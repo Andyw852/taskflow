@@ -15,6 +15,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import kl_common as kc
+from dim_common import require_dim  # noqa: E402
 import stepconf
 
 OUTDIR = "step3_nac"
@@ -65,6 +66,8 @@ def main():
     meth = kc.read_method(prev / kc.METHOD_FILE)
     dim = (meth.get("DIM", "").lower() or kc.resolve_dim(out / "POSCAR")[0])
     _, vac_axis = kc.resolve_dim(out / "POSCAR", dim)
+    require_dim(dim, ('2d', '3d'), "step3_nac",
+                why="NAC 修正的是 LO-TO 劈裂，孤立分子没有长程库仑的 q->0 行为")
     func = conf["FUNC"]
     if func in (None, "", "auto"):
         func = meth.get("FUNC", "pbesol").lower()

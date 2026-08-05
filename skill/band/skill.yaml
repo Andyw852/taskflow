@@ -7,6 +7,7 @@ schema: 1
 name: band
 desc: 能带计算
 version: "1.3"
+checks: ../_common/checks_relax.py   # 公共池里的私有判据（relax_injob）
 
 # 模板布局：shared = 所有步骤共用 templates/ 下同一套模板
 #   skill/band/templates/{incar_2d,incar_3d,submit_jzzn_*}.tpl
@@ -22,7 +23,7 @@ defaults:
 # gen 时推到材料目录的依赖（本目录内的文件；已存在不覆盖）
 # step.conf 不是普通文件：tf 会把 skill 出厂默认 + 项目 templates/ +
 # 项目 templates/<步骤名>/ 三层合并成一份带来源注释的文件再推送。
-gen_need: [dim_common.py, stepconf.py, step.conf,
+gen_need: [relax_common.py, mol_common.py, incar_0d.tpl, submit_std_0d.tpl, dim_common.py, stepconf.py, step.conf,
            incar_2d.tpl, incar_3d.tpl,
            submit_std_2d.tpl, submit_std_3d.tpl, submit_ncl_2d.tpl, submit_ncl_3d.tpl]
 # check 诊断脚本（agent 用，只补不覆盖）
@@ -32,9 +33,8 @@ aux_files: [check_common.py, step1_check_and_resubmit.py, step2_check_and_resubm
 # ---- 计算步骤（顺序即流水线顺序）------------------------------------------
 # seq: run_steps 的序号锚点；三段弛豫共用 seq 1，画图步用 3.1 / 4.1
 steps:
-  - {seq: 1, name: step1a_PBE_opt,  label: S1a_ion,  stage: a, check: relax_skip, group: S1_relax, gen: "gen_step1_PBE_opt.py --stage a", contcar_to_poscar: true}
-  - {seq: 1, name: step1b_PBE_opt,  label: S1b_cell, stage: b, check: relax_skip, group: S1_relax, gen: "gen_step1_PBE_opt.py --stage b", contcar_to_poscar: true}
-  - {seq: 1, name: step1c_PBE_opt,  label: S1c_fine, stage: c, check: relax_skip, group: S1_relax, gen: "gen_step1_PBE_opt.py --stage c", contcar_to_poscar: true}
+  - {seq: 1, name: step1_PBE_opt, label: S1_opt, check: relax_injob,
+     gen: gen_step1_PBE_opt.py, contcar_to_poscar: true}
   - {seq: 2, name: step2_PBE_static,  label: S2_static,  check: outcar,  gen: gen_step2_static.py}
   - {seq: 3, name: step3_PBE_WAVECAR, label: S3_WAVECAR, check: wavecar, gen: gen_step3_WAVECAR.py}
   - {seq: 4, name: step4_HSE_band,    label: S4_HSE,     check: outcar,  gen: gen_step4_HSE.py}

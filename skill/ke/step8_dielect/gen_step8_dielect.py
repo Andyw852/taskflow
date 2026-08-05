@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import ke_common as kc
+from dim_common import require_dim  # noqa: E402
 
 # =========================== 可改参数区 ===========================
 OUTDIR_NAME  = "step8_dielect"
@@ -33,6 +34,8 @@ def main():
     dim = kc.read_method_dim(prev / kc.METHOD_FILE) \
         or kc.resolve_dim_for(out / "POSCAR", DIMENSION)[0]
     _, vac_axis = kc.resolve_dim_for(out / "POSCAR", dim)
+    require_dim(dim, ('2d', '3d'), "step8_dielect",
+                why="DFPT 给的是介电张量；分子对应的是极化率，定义和量纲都不同")
     print("[..] 维度：%s" % dim.upper())
     kc.write_method(out / kc.METHOD_FILE, dim, "DFPT 介电常数")
     kc.vaspkit_kpoints(out, KSCHEME, KSPACING, VASPKIT_EXE, dim, vac_axis)

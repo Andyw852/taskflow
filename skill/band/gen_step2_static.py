@@ -31,7 +31,8 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from dim_common import force_kz1, resolve_dim, resolve_tpl, validate_poscar  # noqa: E402
+from dim_common import (force_kz1, require_dim, resolve_dim,  # noqa: E402
+                        resolve_tpl, validate_poscar)
 
 # step1 目录。"auto" = 自动找最后一个跑完的弛豫阶段：
 #   step1c_PBE_opt -> step1b_PBE_opt -> step1a_PBE_opt -> step1_PBE_opt（旧的单目录）
@@ -371,6 +372,8 @@ def main():
 
     # ---- 维度：优先继承 step1 workflow_method.txt 的 DIM=，缺失按结构判定 ----
     dim, dim_note = resolve_dim(step1 / METHOD_FILE, step2 / "POSCAR")
+    # 静态自洽对 0D 是有意义的（分子的 HOMO-LUMO、DOS、电荷），放行
+    require_dim(dim, ("0d", "2d", "3d"), "step2_PBE_static")
     submit_tpl = resolve_tpl(Path.cwd(), "submit_std", dim)
     print(f"[..] Dimension: {dim.upper()} — {dim_note}")
     print(f"[..] Submit template: {submit_tpl.name}")
@@ -380,7 +383,14 @@ def main():
         sys.exit(f"[ERROR] Missing {potcar_src}")
     shutil.copyfile(potcar_src, step2 / POTCAR_FILE)
 
-    if args.no_vaspkit:
+    if dim == "0d":
+        # 分子的布里渊区只有 Γ 有意义；VASPKIT 按固体的 k 间距会给出 2x2x2，
+        # 白翻几倍机时，且 step1 用的就是 Γ，两步不一致还没法比总能。
+        (step2 / "KPOINTS").write_text(
+            "Gamma only (0D molecule)\n0\nGamma\n1 1 1\n0 0 0\n",
+            encoding="utf-8", newline="\n")
+        print("[OK] KPOINTS: Gamma only (0D)")
+    elif args.no_vaspkit:
         old_kpoints = step1 / "KPOINTS"
         if not old_kpoints.exists():
             sys.exit("[ERROR] --no-vaspkit was used but step1 KPOINTS is missing")

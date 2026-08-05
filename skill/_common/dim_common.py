@@ -147,14 +147,24 @@ def vacuum_per_axis(lat, frac):
     return out
 
 
-def detect_dimension(poscar_path, vacuum_min=VACUUM_MIN):
+# v1.10（公共池）：0D（孤立分子/团簇）支持。
+# 原来 >=2 个真空方向直接 SystemExit；现在返回 "0d"，交给上层决定怎么处理
+# （band 的 step1 走 mol_common 分支；不支持 0D 的技能把 ALLOW_0D 设 False
+#  就恢复旧的报错行为）。
+ALLOW_0D = True
+
+
+def detect_dimension(poscar_path, vacuum_min=VACUUM_MIN, allow_0d=None):
     """按结构判定维度。返回 (dim, axis, vacuums)：
        dim = "2d"/"3d"；axis = 真空轴 0/1/2（3D 时为 None）；vacuums = 三方向真空 Å。
-       检测到 >=2 个真空方向（1D/0D）直接 SystemExit。"""
+       ALLOW_0D=True（缺省）时，>=2 个真空方向返回 ("0d", None, vacuums)；
+       ALLOW_0D=False 时对该情况 SystemExit（旧行为）。"""
     lat, frac = read_poscar_cell_frac(poscar_path)
     vacs = vacuum_per_axis(lat, frac)
     hit = [i for i, v in enumerate(vacs) if v >= vacuum_min]
     if len(hit) >= 2:
+        if ALLOW_0D if allow_0d is None else allow_0d:
+            return "0d", None, vacs
         raise SystemExit(
             "[ERROR] %s 检测到 %d 个方向有 >= %.1f Å 真空（%s）—— 疑似 1D/0D 体系，"
             "本工作流只支持 2D/3D。若判定有误，请调整 vacuum_min 或强制 DIMENSION。"
@@ -167,14 +177,14 @@ def detect_dimension(poscar_path, vacuum_min=VACUUM_MIN):
 
 # ---------------------------------------------------------------- DIM 继承
 def read_dim(method_file):
-    """读 workflow_method.txt 的 DIM=2D/3D；没有返回 None。"""
+    """读 workflow_method.txt 的 DIM=0D/2D/3D；没有返回 None。"""
     p = Path(method_file)
     if not p.exists():
         return None
     for line in p.read_text(encoding="utf-8", errors="ignore").splitlines():
         if line.upper().startswith("DIM="):
             val = line.split("=", 1)[1].strip().lower()
-            if val in ("2d", "3d"):
+            if val in ("0d", "2d", "3d"):
                 return val
     return None
 
@@ -186,7 +196,11 @@ def resolve_dim(method_file, struct_path, vacuum_min=VACUUM_MIN):
     if dim:
         return dim, "继承自 %s (DIM=%s)" % (method_file, dim.upper())
     dim, axis, vacs = detect_dimension(struct_path, vacuum_min)
-    if dim == "2d":
+    if dim == "0d":
+        note = ("按结构判定：>=2 个方向有真空（%s）—— 0D 孤立体系"
+                % ", ".join("%s=%.1f Å" % (AXIS_NAMES[i], v)
+                            for i, v in enumerate(vacs)))
+    elif dim == "2d":
         note = ("按结构判定：沿 %s 轴真空 %.1f Å"
                 % (AXIS_NAMES[axis], vacs[axis]))
     else:
@@ -266,3 +280,44 @@ def filter_kpath_2d(kpt_coords, segments, axis=2, tol=1e-3):
             new_segments.append(cur)
     kept = {lab: c for lab, c in kpt_coords.items() if lab not in bad}
     return kept, new_segments, dropped
+
+
+# ---------------------------------------------------------------- 维度支持声明
+# 下游步骤（step2/3/4、弹性、声子…）用这一行声明自己支持哪些维度：
+#     require_dim(dim, ("2d", "3d"), "step3_PBE_WAVECAR",
+#                 why="高对称路径定义在晶体倒空间，孤立分子没有能带")
+# 不支持就明确报错并说清原因，而不是让后面某个函数抛一句看不懂的模板缺失。
+def require_dim(dim, supported, step_name, why=None):
+    dim = str(dim).lower()
+    supported = [str(x).lower() for x in supported]
+    if dim in supported:
+        return
+    msg = ["[ERROR] %s 不支持 %s 体系（本步骤只支持 %s）。"
+           % (step_name, dim.upper(), "/".join(x.upper() for x in supported))]
+    if why:
+        msg.append("        原因：%s" % why)
+    msg.append("        若判定有误，检查上一步 workflow_method.txt 的 DIM= "
+               "或结构的真空层厚度。")
+    raise SystemExit("\n".join(msg))
+
+# ---------------------------------------------------------------- 0D 守卫
+def require_dim(dim, supported, step="本步骤", why=None):
+    """维度守卫：dim 不在 supported 里就带原因退出。
+
+    用法（放在各 gen_step*.py 拿到 dim 之后一行）：
+        require_dim(dim, ("2d", "3d"), "弹性常数",
+                    "弹性张量是周期体系的应力-应变响应，孤立分子没有这个量")
+
+    为什么要显式守卫：没有它的话，0D 结构会一路往下走到 resolve_tpl，
+    抛一句"找不到 incar_0d.tpl"——看起来像缺文件，其实是这个物理量不存在。
+    """
+    if dim in supported:
+        return
+    msg = ["[ERROR] %s 不支持 %s 体系。" % (step, dim.upper())]
+    if why:
+        msg.append("        原因：%s" % why)
+    msg.append("        支持的维度：%s" % ", ".join(x.upper() for x in supported))
+    if dim == "0d":
+        msg.append("        （0D = POSCAR 有 >=2 个方向的真空，判定阈值 VACUUM_MIN=%.1f Å）"
+                   % VACUUM_MIN)
+    raise SystemExit("\n".join(msg))

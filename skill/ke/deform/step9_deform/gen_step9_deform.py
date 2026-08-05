@@ -16,6 +16,7 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import ke_common as kc
+from dim_common import require_dim  # noqa: E402
 
 # =========================== 可改参数区 ===========================
 OUTDIR_NAME  = "step9_deform"
@@ -59,6 +60,8 @@ def main():
     dim = kc.read_method_dim(prev / kc.METHOD_FILE) \
         or kc.resolve_dim_for(out / "POSCAR", DIMENSION)[0]
     _, vac_axis = kc.resolve_dim_for(out / "POSCAR", dim)
+    require_dim(dim, ('2d', '3d'), "step9_deform",
+                why="载流子输运/形变势建立在能带色散上，孤立分子没有色散")
     print("[..] 维度：%s" % dim.upper())
     kc.write_method(out / kc.METHOD_FILE, dim, "形变势单点（扇出）")
 

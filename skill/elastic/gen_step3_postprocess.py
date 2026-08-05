@@ -25,7 +25,7 @@ import argparse
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from dim_common import read_dim, detect_dimension, AXIS_NAMES  # noqa: E402
+from dim_common import require_dim, read_dim, detect_dimension, AXIS_NAMES  # noqa: E402
 
 # =====================================================================
 #                           用户配置区

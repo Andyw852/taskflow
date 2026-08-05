@@ -25,7 +25,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from dim_common import force_kz1, resolve_dim, resolve_tpl, validate_poscar  # noqa: E402
+from dim_common import require_dim, force_kz1, resolve_dim, resolve_tpl, validate_poscar  # noqa: E402
 
 # =====================================================================
 #                           用户配置区
@@ -202,6 +202,8 @@ def main():
 
     # 维度继承（step1 workflow_method.txt 的 DIM=；缺失按结构判定）
     dim, dim_note = resolve_dim(step1 / METHOD_FILE, step2 / "POSCAR")
+    require_dim(dim, ('2d', '3d'), "step2_elastic",
+                why="弹性张量描述周期性介质的应力-应变响应，孤立分子没有这个量")
     submit_tpl = resolve_tpl(Path.cwd(), "submit_std", dim)
     print(f"[..] 维度：{dim.upper()} — {dim_note}")
     print(f"[..] 提交模板：{submit_tpl.name}")

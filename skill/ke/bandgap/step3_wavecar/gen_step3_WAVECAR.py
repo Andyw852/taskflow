@@ -80,7 +80,7 @@ import numpy as np
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from dim_common import filter_kpath_2d, resolve_dim, resolve_tpl  # noqa: E402
+from dim_common import require_dim, filter_kpath_2d, resolve_dim, resolve_tpl  # noqa: E402
 
 # ============================== 配置 ==============================
 
@@ -1493,6 +1493,8 @@ def main():
 
     # ---- 维度：优先继承 step2 workflow_method.txt 的 DIM=，缺失按结构判定 ----
     dim, dim_note = resolve_dim(os.path.join(STEP2_DIR, METHOD_FILE), struct)
+    require_dim(dim, ('2d', '3d'), "step3_wavecar",
+                why="高对称路径定义在晶体倒空间，孤立分子没有能带")
     print("[..] 维度：%s — %s" % (dim.upper(), dim_note), file=sys.stderr)
 
     ibzkpt = os.path.join(STEP2_DIR, IBZKPT_FILE)

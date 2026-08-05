@@ -11,6 +11,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import kl_common as kc
+from dim_common import require_dim  # noqa: E402
 import stepconf
 
 OUTDIR = "step2_static"
@@ -42,6 +43,8 @@ def main():
     meth = kc.read_method(prev / kc.METHOD_FILE)
     dim = (meth.get("DIM", "").lower() or kc.resolve_dim(out / "POSCAR")[0])
     _, vac_axis = kc.resolve_dim(out / "POSCAR", dim)
+    require_dim(dim, ('2d', '3d'), "step2_static",
+                why="静态自洽本身对分子成立，但本脚本的 KPOINTS 仍按固体网格生成；要跑 0D 请先照 band 的 gen_step2_static 补 Gamma 分支")
     func = conf["FUNC"]
     if func in (None, "", "auto"):
         func = meth.get("FUNC", "pbesol").lower()
