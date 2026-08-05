@@ -4,3 +4,5 @@ __pycache__/
 .DS_Store
 versions/v1.0/tf.bak_*
 setting/.tf_watch.log
+*.bak
+*.bak_*
