@@ -5,8 +5,8 @@
 让 gen 脚本在登录节点用系统 python 就能跑。VASPKIT 负责 KPOINTS/POTCAR。
 
 放置：由 skill.yaml 的 gen_need 列出，随每个用它的步骤推到材料目录。
-      ——因此本文件要复制进每个用到它的步骤源目录（step5_uniform、
-        step8_dielect、deform/step9_deform）。见 setup_ke.sh。
+      ——因此本文件要复制进每个用到它的步骤源目录（step3_uniform、
+        step5_dielect、step7_deform）。见 setup_ke.sh。
 """
 import os
 import re

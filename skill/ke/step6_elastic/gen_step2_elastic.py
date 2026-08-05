@@ -61,8 +61,9 @@ SUBMIT_OVERRIDE = {
 #                         用户配置区结束
 # =====================================================================
 
-STEP1_DIR = "step1_std_opt"
-STEP2_DIR = "step7_elastic"   # ke：改名避免和带隙段 step2_* 混淆
+import os as _os
+STEP1_DIR = "step1_opt" if _os.path.isdir("step1_opt") else "step1_std_opt"
+STEP2_DIR = "step6_elastic"   # ke：改名避免和带隙段 step2_* 混淆
 INCAR_FILE = "INCAR"
 POTCAR_FILE = "POTCAR"
 METHOD_FILE = "workflow_method.txt"
@@ -202,7 +203,7 @@ def main():
 
     # 维度继承（step1 workflow_method.txt 的 DIM=；缺失按结构判定）
     dim, dim_note = resolve_dim(step1 / METHOD_FILE, step2 / "POSCAR")
-    require_dim(dim, ('2d', '3d'), "step7_elastic",
+    require_dim(dim, ('2d', '3d'), "step6_elastic",
                 why="弹性张量描述周期性介质的应力-应变响应，孤立分子没有这个量")
     submit_tpl = resolve_tpl(Path.cwd(), "submit_std", dim)
     print(f"[..] 维度：{dim.upper()} — {dim_note}")

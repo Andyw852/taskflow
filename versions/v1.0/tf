@@ -1174,6 +1174,36 @@ def scan_project_configs(roots):
     return found
 
 
+def _stepconf_param_from_file(path, key):
+    """极简读取 step.conf 里某 [params] 键的值（行尾 # / ! 注释剥掉）。
+    找不到文件/键返回 None。只用于驱动装配阶段读 BANDGAP 这类步骤图开关，
+    不替代 gen 脚本侧的 stepconf.py 完整合并。"""
+    try:
+        with open(path, encoding="utf-8-sig") as fh:
+            for ln in fh:
+                s = re.sub(r"\s+[#!].*$", "", ln).strip()
+                if not s or s.startswith(("#", "!")):
+                    continue
+                if "=" in s:
+                    k, v = s.split("=", 1)
+                    if k.strip() == key:
+                        return v.strip()
+    except OSError:
+        pass
+    return None
+
+
+def resolve_stepconf_flags(seg, ps_dir):
+    """把项目共用 step.conf 里的步骤图开关映射成可选步骤组的开/关，注入 seg。
+    目前一条：BANDGAP = pbe|hse  ->  bandgap_hse（pbe 关掉整段 HSE）。
+    仅在 seg 未显式写该开关时生效（项目配置里手写 bandgap_hse 优先级更高）。"""
+    scp = os.path.join(ps_dir, "templates", "step.conf")
+    if "bandgap_hse" not in seg:
+        bg = _stepconf_param_from_file(scp, "BANDGAP")
+        if bg is not None:
+            seg["bandgap_hse"] = (bg.lower() != "pbe")
+
+
 def merge_project_configs(cfg):
     """把项目配置（project_setting/tf_*.yaml）的 task_types 合并进全局配置。
     同 key：项目配置作为该类型的一个"段"（独立 local_root，缺省字段继承全局/主定义）。
@@ -1213,6 +1243,7 @@ def merge_project_configs(cfg):
                 # 项目/体系级（C20/project_setting）：缺省 local_root = 父目录
                 seg["local_root"] = proj_dir
             seg["_from"] = os.path.realpath(path)
+            resolve_stepconf_flags(seg, os.path.dirname(path))  # step.conf 的 BANDGAP -> bandgap_hse
             if key in tt and tt[key] is not seg:
                 tt[key].setdefault("_segments", []).append(seg)
             else:

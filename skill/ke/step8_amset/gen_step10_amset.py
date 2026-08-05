@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""gen_step10_amset.py —— 写 settings.yaml → amset run → σ/S/κ_e（step10_amset）。
+"""gen_step8_amset.py —— 写 settings.yaml → amset run → σ/S/κ_e（step8_amset）。
 
 汇集前面所有产物，写 amset 的 settings.yaml，提交到计算节点跑 amset run。
 输入软链：
-  wavefunction.h5   ← step6_wave
-  deformation.h5    ← step9b_deform_read
-介电常数从 step8_dielect/OUTCAR 解析，带隙从带隙段或配置读，弹性从 step7_elastic。
-产出目录：step10_amset/，产物 transport.json（判据看 thermal_conductivity）。
+  wavefunction.h5   ← step4_wave
+  deformation.h5    ← step7b_deform_read
+介电常数从 step5_dielect/OUTCAR 解析，带隙从带隙段或配置读，弹性从 step6_elastic。
+产出目录：step8_amset/，产物 transport.json（判据看 thermal_conductivity）。
 """
 import glob
 import os
@@ -22,10 +22,10 @@ except Exception:
     _HAS_KC = False
 
 # =========================== 可改参数区 ===========================
-OUTDIR_NAME = "step10_amset"
-WAVE_DIR    = "step6_wave"
-READ_DIR    = "step9b_deform_read"
-DIELECT_DIR = "step8_dielect"
+OUTDIR_NAME = "step8_amset"
+WAVE_DIR    = "step4_wave"
+READ_DIR    = "step7b_deform_read"
+DIELECT_DIR = "step5_dielect"
 BANDGAP_PLOT = "step4_band_plot"      # 带隙段画图步，band_summary.json 里有 gap
 STEP_LABEL  = "S8_kappa"
 AMSET_CMD   = "amset run >> amset.log 2>&1 && ls -l transport.json"
@@ -38,7 +38,7 @@ MANUAL_BANDGAP = None                 # None=自动读；或写数值(eV) 覆盖
 #   MANUAL_ELASTIC 填了就用它，否则从 ELASTIC_DIR/OUTCAR 自动解析（kBar→GPa）。
 #   直接填：单个数（各向同性近似，GPa），或 6x6 列表（完整 Cij，GPa）。
 MANUAL_ELASTIC = None
-ELASTIC_DIR = "step7_elastic"
+ELASTIC_DIR = "step6_elastic"
 # =================================================================
 
 
@@ -74,7 +74,7 @@ def read_dielectric(dielect_dir: Path):
 
 
 def read_elastic(cwd: Path):
-    """弹性常数来源：MANUAL_ELASTIC 优先，否则从 step7_elastic/OUTCAR 解析。
+    """弹性常数来源：MANUAL_ELASTIC 优先，否则从 step6_elastic/OUTCAR 解析。
     返回 amset settings.yaml 用的值：单标量(GPa) 或 6x6 列表(GPa)，读不到返回 None。"""
     if MANUAL_ELASTIC is not None:
         return MANUAL_ELASTIC
@@ -154,7 +154,7 @@ def write_settings(out: Path, eps_inf, eps_static, gap, elastic):
             for row in elastic:
                 lines.append("  - [%s]" % ", ".join("%g" % v for v in row))
     else:
-        lines.append("# elastic_constant: 未读到——step7_elastic 没算完，或手填 "
+        lines.append("# elastic_constant: 未读到——step6_elastic 没算完，或手填 "
                      "MANUAL_ELASTIC。ACD 散射需要它。")
     (out / "settings.yaml").write_text("\n".join(lines) + "\n",
                                        encoding="utf-8", newline="\n")
@@ -177,7 +177,7 @@ def main():
         print("[WARN] 没读到带隙——settings.yaml 不写 bandgap，AMSET 会用 DFT 带隙"
               "（偏小）。带隙段关了的话请在 project_setting/setting.yaml 写 bandgap: 值")
     if elastic is None:
-        print("[WARN] 没读到弹性常数——step7_elastic 没算完，或手填 MANUAL_ELASTIC。"
+        print("[WARN] 没读到弹性常数——step6_elastic 没算完，或手填 MANUAL_ELASTIC。"
               "ACD 声学散射需要它。")
     write_settings(out, eps_inf, eps_static, gap, elastic)
 

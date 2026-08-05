@@ -74,7 +74,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from dim_common import require_dim, resolve_dim, resolve_tpl  # noqa: E402
 
 # ============================== 配置 ==============================
-STEP3_DIR  = "step2_bandgap/step2.2_wave"   # 源目录
+STEP3_DIR  = "step2_bandgap/step2.2_pbe"   # 源目录
 STEP4_DIR  = "step2_bandgap/step2.3_hse"      # 目标目录（切片时自动加 _p{i}of{n}）
 
 INCAR_FILE = "INCAR"

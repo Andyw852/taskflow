@@ -363,7 +363,7 @@ def main():
                     help="停滞/小振荡默认视为有效收敛放行；加此项改为交人工")
     args = ap.parse_args()
 
-    job_dir = (Path(__file__).resolve().parent / "step1_std_opt"
+    job_dir = (Path(__file__).resolve().parent / ("step1_opt" if (Path(__file__).resolve().parent / "step1_opt").is_dir() else "step1_std_opt")
                if args.job_dir is None else Path(args.job_dir).expanduser()).resolve()
     now = datetime.now().isoformat(timespec="seconds")
     base = {"job_dir": str(job_dir), "checked_at": now, "pressure_tol_kb": args.pressure_tol}

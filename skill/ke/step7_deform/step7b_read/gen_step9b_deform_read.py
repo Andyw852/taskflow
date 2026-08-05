@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""gen_step9b_deform_read.py —— amset deform read → deformation.h5（step9b_deform_read）。
+"""gen_step7b_deform_read.py —— amset deform read → deformation.h5（step7b_deform_read）。
 
 run:gen 步骤：在登录节点直接跑，不提交 SLURM。
-把 step9_deform 的全部形变单点结果读进 deformation.h5。秒级完成。
+把 step7_deform 的全部形变单点结果读进 deformation.h5。秒级完成。
 产出：本步目录下的 deformation.h5（done_marker）。
 """
 import glob
@@ -13,8 +13,8 @@ import sys
 from pathlib import Path
 
 # =========================== 可改参数区 ===========================
-OUTDIR_NAME  = "step9b_deform_read"
-DEFORM_DIR   = "step9_deform"
+OUTDIR_NAME  = "step7b_deform_read"
+DEFORM_DIR   = "step7_deform"
 DEFORM_GLOB  = "*deform*"
 AMSET_ENV_SRC = "source /public/home/wangchao/miniconda3/etc/profile.d/conda.sh && conda activate amset_clean"
 # =================================================================
@@ -36,7 +36,7 @@ def main():
                        or os.path.isfile(os.path.join(p, "vasprun.xml.gz")))]
     if missing:
         sys.exit("[ERROR] 以下形变单点还没算完（缺 vasprun.xml）：%s\n"
-                 "        等 step9_deform 全部 done 再跑本步。"
+                 "        等 step7_deform 全部 done 再跑本步。"
                  % ", ".join(missing[:8]))
 
     # amset deform read 在形变目录里跑，产出 deformation.h5，再挪到本步目录

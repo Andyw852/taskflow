@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""gen_step6_wave.py —— amset wave → wavefunction.h5（step6_wave）。
+"""gen_step4_wave.py —— amset wave → wavefunction.h5（step4_wave）。
 
 amset wave 需要 uniform 步的 vasprun.xml 和 WAVECAR。WAVECAR 动辄几十 GB，
 不复制，改用软链。提交脚本在计算节点 amset_clean 环境里跑 amset wave。
-产出目录：step6_wave/，产物 wavefunction.h5
+产出目录：step4_wave/，产物 wavefunction.h5
 """
 import os
 import sys
@@ -20,8 +20,8 @@ except Exception:
     _HAS_KC = False
 
 # =========================== 可改参数区 ===========================
-OUTDIR_NAME = "step6_wave"
-UNIFORM_DIR = "step5_uniform"
+OUTDIR_NAME = "step4_wave"
+UNIFORM_DIR = "step3_uniform"
 STEP_LABEL  = "S4_wave"
 # amset wave 命令（--planewave-cutoff 可按体系加大；见 amset 文档）
 AMSET_CMD   = "amset wave >> amset.log 2>&1 && ls -l wavefunction.h5"

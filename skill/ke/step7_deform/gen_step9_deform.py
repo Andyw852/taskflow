@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""gen_step9_deform.py —— 形变势单点，扇出（step9_deform）。
+"""gen_step7_deform.py —— 形变势单点，扇出（step7_deform）。
 
 流程：
   1. POSCAR ← step1_std_opt/CONTCAR
   2. amset deform create → 在本目录生成 undeformed/ + deform-01..NN/（各含形变 POSCAR）
   3. 给每个子目录补 INCAR（渲染 incar_deform_*.tpl）+ KPOINTS + POTCAR + submit.sh
 tf 的扇出机制随后对每个 *deform* 子目录各自 sbatch。
-产出目录：step9_deform/{undeformed, deform-01, ...}
+产出目录：step7_deform/{undeformed, deform-01, ...}
 """
 import os
 import shutil
@@ -19,8 +19,8 @@ import ke_common as kc
 from dim_common import require_dim  # noqa: E402
 
 # =========================== 可改参数区 ===========================
-OUTDIR_NAME  = "step9_deform"
-PREV_CANDS   = ["step1_std_opt"]
+OUTDIR_NAME  = "step7_deform"
+PREV_CANDS   = ["step1_opt", "step1_std_opt"]
 DIMENSION    = "auto"
 VASPKIT_EXE  = "vaspkit"
 KSCHEME      = "2"
@@ -56,11 +56,11 @@ def main():
     prev = kc.find_prev_dir(cwd, PREV_CANDS)
     if prev is None:
         sys.exit("[ERROR] 找不到含 CONTCAR 的上一步：%s" % PREV_CANDS)
-    kc.relay_poscar(prev / "CONTCAR", out / "POSCAR", "step1_std_opt")
+    kc.relay_poscar(prev / "CONTCAR", out / "POSCAR", "step1_opt")
     dim = kc.read_method_dim(prev / kc.METHOD_FILE) \
         or kc.resolve_dim_for(out / "POSCAR", DIMENSION)[0]
     _, vac_axis = kc.resolve_dim_for(out / "POSCAR", dim)
-    require_dim(dim, ('2d', '3d'), "step9_deform",
+    require_dim(dim, ('2d', '3d'), "step7_deform",
                 why="载流子输运/形变势建立在能带色散上，孤立分子没有色散")
     print("[..] 维度：%s" % dim.upper())
     kc.write_method(out / kc.METHOD_FILE, dim, "形变势单点（扇出）")

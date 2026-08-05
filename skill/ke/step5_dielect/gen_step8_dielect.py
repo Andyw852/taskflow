@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""gen_step8_dielect.py —— DFPT 介电常数（step8_dielect）。
+"""gen_step5_dielect.py —— DFPT 介电常数（step5_dielect）。
 
 结构从优化结果接力，IBRION=8 + LEPSILON 一次微扰求 ε∞ 与 ε₀。
-产出目录：step8_dielect/，判据看 OUTCAR 的 MACROSCOPIC STATIC DIELECTRIC TENSOR。
+产出目录：step5_dielect/，判据看 OUTCAR 的 MACROSCOPIC STATIC DIELECTRIC TENSOR。
 """
 import sys
 from pathlib import Path
@@ -12,8 +12,8 @@ import ke_common as kc
 from dim_common import require_dim  # noqa: E402
 
 # =========================== 可改参数区 ===========================
-OUTDIR_NAME  = "step8_dielect"
-PREV_CANDS   = ["step1_std_opt"]
+OUTDIR_NAME  = "step5_dielect"
+PREV_CANDS   = ["step1_opt", "step1_std_opt"]
 DIMENSION    = "auto"
 VASPKIT_EXE  = "vaspkit"
 KSCHEME      = "2"
@@ -30,11 +30,11 @@ def main():
     prev = kc.find_prev_dir(cwd, PREV_CANDS)
     if prev is None:
         sys.exit("[ERROR] 找不到含 CONTCAR 的上一步：%s" % PREV_CANDS)
-    kc.relay_poscar(prev / "CONTCAR", out / "POSCAR", "step1_std_opt")
+    kc.relay_poscar(prev / "CONTCAR", out / "POSCAR", "step1_opt")
     dim = kc.read_method_dim(prev / kc.METHOD_FILE) \
         or kc.resolve_dim_for(out / "POSCAR", DIMENSION)[0]
     _, vac_axis = kc.resolve_dim_for(out / "POSCAR", dim)
-    require_dim(dim, ('2d', '3d'), "step8_dielect",
+    require_dim(dim, ('2d', '3d'), "step5_dielect",
                 why="DFPT 给的是介电张量；分子对应的是极化率，定义和量纲都不同")
     print("[..] 维度：%s" % dim.upper())
     kc.write_method(out / kc.METHOD_FILE, dim, "DFPT 介电常数")

@@ -235,7 +235,7 @@ ANGLE_TOL = 5.0       # 对称性识别角度容差（度）
 # ###################################################################
 
 STEP2_DIR    = "step2_bandgap/step2.1_static"     # 源目录
-STEP3_DIR    = "step2_bandgap/step2.2_wave"    # 目标目录
+STEP3_DIR    = "step2_bandgap/step2.2_pbe"    # 目标目录
 
 STRUCT_FILE  = None       # None=自动找 CONTCAR 再 POSCAR
 IBZKPT_FILE  = "IBZKPT"

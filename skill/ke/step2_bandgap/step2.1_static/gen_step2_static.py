@@ -36,7 +36,7 @@ from dim_common import require_dim, force_kz1, resolve_dim, resolve_tpl, validat
 # step1 目录。"auto" = 自动找最后一个跑完的弛豫阶段：
 #   step1c_PBE_opt -> step1b_PBE_opt -> step1a_PBE_opt -> step1_PBE_opt（旧的单目录）
 # 也可以直接写死某个目录名。
-STEP1_DIR = "step1_std_opt"   # ke：弛豫复用 elastic 目录名
+STEP1_DIR = "auto"
 STEP2_DIR = "step2_bandgap/step2.1_static"
 INCAR_FILE = "INCAR"
 POTCAR_FILE = "POTCAR"
@@ -105,7 +105,7 @@ def resolve_step1_dir():
     """STEP1_DIR='auto' 时，按 c -> b -> a -> 旧单目录 的顺序找最后一个有 CONTCAR 的。"""
     if STEP1_DIR != "auto":
         return STEP1_DIR
-    for name in ("step1c_PBE_opt", "step1b_PBE_opt", "step1a_PBE_opt", "step1_PBE_opt"):
+    for name in ("step1_opt", "step1_std_opt", "step1c_PBE_opt", "step1b_PBE_opt", "step1a_PBE_opt", "step1_PBE_opt"):
         if Path(name, "CONTCAR").is_file() or Path(name, "POSCAR").is_file():
             print("[..] step1 来源：%s" % name)
             return name

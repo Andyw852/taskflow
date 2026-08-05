@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import relax_common as R
 
 R.run(
-    OUTDIR_SINGLE="step1_std_opt",
+    OUTDIR_SINGLE="step1_opt",
     SCRIPT_NAME="gen_step1_std_opt.py",
     NEXT_STEP="gen_step2_static.py",
     STAGE_MODE="in_job",
