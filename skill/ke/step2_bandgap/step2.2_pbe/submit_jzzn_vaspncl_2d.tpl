@@ -5,7 +5,7 @@
 #SBATCH --partition=cpu192
 #SBATCH --job-name={{JOBNAME}}
 #SBATCH --nodes=1
-#SBATCH --ntasks-per-node=96
+#SBATCH --ntasks-per-node=48
 #SBATCH --output=queue.out
 #SBATCH --error=queue.err
 #SBATCH --qos=regular

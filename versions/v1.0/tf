@@ -10,10 +10,11 @@ taskflow (tf) — VASP 多材料·多步骤·多任务类型流水线管理框�
   tf [ROOT]                        状态总表（全部任务类型，带 tt 列）
   tf -tt band                      只看能带类
   tf -tt band -p MAT status        单材料详情
-  tf [-tt TT] [-p MAT] start       开始：输入没生成先 gen 再提交
+  tf [-tt TT] list                 状态总表（只读，不自动拉取/提交）
+  tf [-tt TT] [-p MAT] start       开始/提交：输入没生成先 gen 再 sbatch（唯一会提交的命令）
   tf [-tt TT] [-p MAT] stop        取消作业
-  tf [-tt TT] [-p MAT] retry       用现有输入文件重交（手改文件后用它）
-  tf [-tt TT] [-p MAT] rerun       删除旧的生成文件 → gen 重新生成 → 提交
+  tf [-tt TT] [-p MAT] retry       只重新生成输入，不提交（改完输入用 start 提交）
+  tf [-tt TT] [-p MAT] rerun       清空工作目录 → gen 重新生成（不提交，待 start）
   tf json                          JSON 输出
   tf config                        打印示例配置
 
@@ -2751,9 +2752,13 @@ def do_run_gen_step(cfg, t, m, s, tag):
     return False
 
 
-def do_submit(cfg, t, m, s, force, gen_first, contcar_cp, tag):
-    """返回 True=成功 / False=失败或被拒绝（供退出码统计）。"""
+def do_submit(cfg, t, m, s, force, gen_first, contcar_cp, tag, submit=True):
+    """返回 True=成功 / False=失败或被拒绝（供退出码统计）。
+    submit=False：只生成输入（gen），不 sbatch、不触发本地生成步，交由 tf start。"""
     if step_cfg(t, s["name"], m).get("run") == "gen":  # v3.21：画图等轻量步骤
+        if not submit:
+            print("%s: 本地生成步（画图/读取），已就绪，待 tf … start 触发。" % tag)
+            return True
         return do_run_gen_step(cfg, t, m, s, tag)
     if not kill_if_queued(cfg, s, force, tag):
         return False
@@ -2766,6 +2771,11 @@ def do_submit(cfg, t, m, s, force, gen_first, contcar_cp, tag):
     if contcar_cp:
         run_remote(cfg, "cd %s && [ -f CONTCAR ] && cp CONTCAR POSCAR || true"
                    % shlex.quote(s["dir"]))
+    if not submit:   # v3.22：只生成不提交，交由 start
+        print("%s: 已生成输入，未提交。检查后运行  tf -p %s -j %s start  提交。"
+              % (tag, m["name"].split("/")[-1], s["label"]))
+        log_action(m, "gen %s（只生成输入，待 start 提交）" % s["label"])
+        return True
     jobname = "%s-%s-%s" % (m["name"].split("/")[-1], m["tt"], s["label"])
     ok, out, jid = remote_sbatch(cfg, s, jobname=jobname)
     print("%s: %s" % (tag, ("已提交 %s (jobid=%s)" % (jobname, jid)) if ok
@@ -2798,7 +2808,7 @@ def do_rerun_step(cfg, t, m, s, yes, tag):
     s2["has_incar"] = False
     s2["job"] = None
     return do_submit(cfg, t, m, s2, force=False, gen_first=True, contcar_cp=False,
-                     tag=tag)
+                     tag=tag, submit=False)
 
 
 def tag_of(m, s):
@@ -3037,7 +3047,7 @@ def retry_submit(cfg, t, m, s, force, tag):
     return do_submit(cfg, t, m, s2, force, gen_first=True,
                      contcar_cp=step_cfg(t, s["name"], m).get(
                          "contcar_to_poscar", False),
-                     tag=tag)
+                     tag=tag, submit=False)
 
 
 def cmd_retry(cfg, data, mname, jname, force, incl_scancel=False):
@@ -3212,7 +3222,7 @@ def rerun_project(cfg, t, m, yes):
     s0["has_incar"] = False
     s0["job"] = None
     return do_submit(cfg, t, m, s0, force=False, gen_first=True, contcar_cp=False,
-                     tag="rerun " + tag_of(m, first))
+                     tag="rerun " + tag_of(m, first), submit=False)
 
 def auto_advance(cfg, data):
     """status 时自动推进可开始的步骤（全局 tf.yaml 写 auto_advance: true 开启；
@@ -4470,14 +4480,18 @@ USAGE = """\
 
 命令:
   status    状态总表（缺省命令）；加 -p 看单材料详情
-  start     开始：输入没生成先 gen 再提交。无 -p = 一键推进全部材料
+  list      状态总表（只读）：不 auto-fetch、不 auto-advance，纯查看、绝不提交
+  start     开始/提交：输入没生成先 gen 再 sbatch。无 -p = 一键推进全部材料。
+            ★ 唯一会向超算提交作业的命令（init/retry/rerun 都只生成不提交）
   stop      取消作业。无 -p = 一键停止全部作业（有确认）；-p = 该材料全部作业；-p -job = 指定步骤。
             取消的步骤打 scancel 标记：状态列显示 scancel，auto_advance
             和批量 start 都不会再动它；重跑：-p X start（保留文件直接重交）/
             retry / rerun，或跨材料 -status scancel start（retry/rerun）
-  retry     用现有输入文件重交（适合在超算手改文件后）。无 -p = 一键重交所有 FAIL 步骤
-  rerun     删除旧的生成文件 → gen 重新生成 → 提交。无 -p 无 -j = 全部材料推倒重来；
-            -j 不带 -p = 全部材料只重做该步骤（脚本改动后一键修复，有确认）
+  retry     只重新生成输入，不提交——保留已有产物（OUTCAR/CONTCAR），检查后用 start 提交。
+            适合超算上手改文件/改参数后。无 -p = 一键重生成所有 FAIL 步骤
+  rerun     推倒重来，只生成不提交（待 start）：整材料 = 清空整个工作目录（只留
+            POSCAR）从第一步重生成；-j 指定 = 只删该步目录重生成。无 -p 无 -j =
+            全部材料整体重来；-j 不带 -p = 全部材料只重做该步骤（有确认）
   clean     只删不建，回到 PREP：无 -p = 全部材料清空（本地+超算只留 POSCAR）；
             -p X = 该材料清空；-p C20 = 该体系所有材料；-p X -j Y = 只删该步骤目录。
             关联作业一并取消（有确认，-y 跳过）
@@ -4563,6 +4577,11 @@ USAGE = """\
   能带画图步骤：step3/4 算完后自动追加 S3.1_plot/S4.1_plot（材料目录运行画图
   脚本，不交 SLURM），状态 = completed/not started/error，产物整目录自动拉回。
   类型配置 plot_steps: false 关闭（备注见 tf config 输出的模板）。
+  带隙层级（ke/band）：材料 project_setting/templates/step.conf 里
+  BANDGAP = pbe|hse（默认 hse）。pbe = 只算到 PBE 带隙+画图，跳过整段 HSE；
+  hse = 继续 HSE。改这一个键即增删 HSE 步骤，无需改 skill.yaml。
+  按材料改每步输入：编辑 project_setting/templates/<步骤名>/ 下的 incar_*.tpl、
+  submit_*.tpl（只影响本材料；缺时回落技能库出厂模板）。tf init 从技能库铺一套。
   技能子目录：类型配置 skill_subdir: true 时，该技能的计算放进材料目录下的
   技能子文件夹（远端 work/材料/<dir_name>/stepN，本地 result 在 材料/<dir_name>/result），
   dir_name 缺省 = 类型 key（想叫别的名字就写 dir_name: 名字）。同一材料可同时
@@ -4592,11 +4611,12 @@ USAGE = """\
   tf -tt elastic -p qHPC20 hpc tianhe  qHPC20 的 elastic 技能切到 tianhe 集群
   tf -p qHPC20 -job 1 dir              输出该步骤在超算的目录路径
   ssh jzzn "cd $(tf -p qHPC20 -job 1 dir) && tail -50 OUTCAR"
-  tf start                             一键推进所有材料
+  tf start                             一键推进所有材料（提交）
+  tf list                              只读状态总表（不提交、不拉取）
   tf stop -y                           一键停止全部作业
-  tf retry                             一键重交所有 FAIL 步骤
-  tf rerun                             全部材料删档重来（有确认）
-  tf -j S3_WAVECAR rerun -y            全部材料只重做 S3（用本地最新脚本重新生成）
+  tf retry                             一键重生成所有 FAIL 步骤输入（不提交，再 start）
+  tf rerun                             全部材料清空重生成（有确认，不提交）
+  tf -j S3_WAVECAR rerun -y            全部材料只重做 S3（本地最新脚本重生成，不提交）
   tf -j S3_WAVECAR -x qHPC60 rerun -y  同上但跳过 qHPC60
   tf -j S2_static start                全部材料只提交 S2 步骤
   tf -j S3.1_plot S4.1_plot start      全部材料只跑两个画图步骤
@@ -5000,7 +5020,7 @@ def main():
     a, unknown = p.parse_known_args()  # v3.14：位置参数可穿插在选项中间
     a.args = list(a.args) + unknown    # （-p A B retry / -p A B -j 1 dir）
 
-    commands = {"status", "start", "stop", "retry", "rerun", "json", "config",
+    commands = {"status", "list", "start", "stop", "retry", "rerun", "json", "config",
                 "dir", "fetch", "init", "clean", "watch", "help", "auto",
                 "adopt", "migrate-subdir", "hpc", "skills", "conf"}
     root, cmd, pos = None, "status", []
@@ -5158,6 +5178,11 @@ def main():
                                         jb, a.force) == 0 else 1
         sys.exit(fails)
 
+    if cmd == "list":   # v3.23：只读总览表格；不 auto_fetch/auto_advance（绝不提交）
+        if a.hide_done or (cfg.get("hide_done") and not a.show_done):
+            apply_hide_done(data)
+        render_table(data)
+        return
     if cmd == "status":
         _t1 = _time.time()
         auto_fetch(cfg, data)   # 算完的步骤自动保存到本地 result/
