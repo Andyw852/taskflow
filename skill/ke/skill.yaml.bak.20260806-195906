@@ -1,4 +1,3 @@
-# patch_ke_dag：needs 是显式依赖，DAG 调度用；没写 needs 的步骤回退为"上一步"。
 # =============================================================================
 # skill/ke/skill.yaml —— 电子热导率（AMSET）
 #
@@ -54,44 +53,37 @@ steps:
      check: wavecar, gen: gen_step5_uniform.py,
      gen_need: [ke_common.py, dim_common.py, check_common.py,
                 incar_uniform_2d.tpl, incar_uniform_3d.tpl,
-                submit_std_2d.tpl, submit_std_3d.tpl],
-     needs: ["step1_opt"]}
+                submit_std_2d.tpl, submit_std_3d.tpl]}
 
   - {seq: 4, name: step4_wave, label: S4_wave, src: step4_wave,
      check: marker, marker: "wavefunction.h5:", gen: gen_step6_wave.py,
-     gen_need: [submit_amset.tpl],
-     needs: ["step3_uniform"]}
+     gen_need: [submit_amset.tpl]}
 
   - {seq: 5, name: step5_dielect, label: S5_dielect, src: step5_dielect,
      check: marker, marker: "OUTCAR:MACROSCOPIC STATIC DIELECTRIC TENSOR",
      gen: gen_step8_dielect.py,
      gen_need: [ke_common.py, dim_common.py, check_common.py,
                 incar_dfpt_2d.tpl, incar_dfpt_3d.tpl,
-                submit_std_2d.tpl, submit_std_3d.tpl],
-     needs: ["step1_opt"]}
+                submit_std_2d.tpl, submit_std_3d.tpl]}
 
   - {seq: 6, name: step6_elastic, label: S6_elastic, src: step6_elastic,
      check: marker, marker: "OUTCAR:TOTAL ELASTIC MODULI",
      gen: gen_step2_elastic.py,
      gen_need: [dim_common.py, check_common.py, step2_check_and_resubmit.py,
-                submit_std_2d.tpl, submit_std_3d.tpl],
-     needs: ["step1_opt"]}
+                submit_std_2d.tpl, submit_std_3d.tpl]}
 
   - {seq: 7, name: step7_deform, label: S7_deform, src: step7_deform,
      check: outcar, fanout: "*deform*", gen: gen_step9_deform.py,
      gen_need: [ke_common.py, dim_common.py, incar_deform_2d.tpl, incar_deform_3d.tpl,
-                submit_std_2d.tpl, submit_std_3d.tpl],
-     needs: ["step1_opt"]}
+                submit_std_2d.tpl, submit_std_3d.tpl]}
 
   - {seq: 7.1, name: step7b_deform_read, label: S7.1_read, src: step7_deform/step7b_read,
      check: plot, run: gen, done_marker: deformation.h5,
-     gen: gen_step9b_deform_read.py, gen_need: [], fetch_all: true,
-     needs: ["step7_deform"]}
+     gen: gen_step9b_deform_read.py, gen_need: [], fetch_all: true}
 
   - {seq: 8, name: step8_amset, label: S8_kappa, src: step8_amset,
      check: marker, marker: "transport.json:thermal_conductivity",
-     gen: gen_step10_amset.py, gen_need: [submit_amset.tpl], fetch_all: true,
-     needs: ["step4_wave", "step5_dielect", "step6_elastic", "step7b_deform_read", "step2_bandgap/step2.2_pbe_plot", "step2_bandgap/step2.3_hse_plot"]}
+     gen: gen_step10_amset.py, gen_need: [submit_amset.tpl], fetch_all: true}
 
 # --- 2 带隙段：子步嵌套进 step2_bandgap/，状态表合并成 S2_bandgap 一列 ---------
 # 泛函 pbe/pbesol 由 step1 弛豫继承。两条分支各自带画图，由 step.conf 的
@@ -113,21 +105,18 @@ optional_steps:
          group: S2_bandgap, after: step1_opt,
          src: step2_bandgap/step2.1_static, check: outcar, gen: gen_step2_static.py,
          gen_need: [dim_common.py, check_common.py, step2_check_and_resubmit.py,
-                    incar_2d.tpl, incar_3d.tpl, submit_std_2d.tpl, submit_std_3d.tpl],
-     needs: ["step1_opt"]}
+                    incar_2d.tpl, incar_3d.tpl, submit_std_2d.tpl, submit_std_3d.tpl]}
       - {seq: 2.2, name: "step2_bandgap/step2.2_pbe", label: S2.2_pbe,
          group: S2_bandgap, after: "step2_bandgap/step2.1_static",
          src: step2_bandgap/step2.2_pbe, check: wavecar, gen: gen_step3_WAVECAR.py,
          gen_need: [dim_common.py, check_common.py, step3_check_and_resubmit.py,
                     incar_2d.tpl, incar_3d.tpl, submit_std_2d.tpl, submit_std_3d.tpl,
-                    submit_ncl_2d.tpl, submit_ncl_3d.tpl],
-     needs: ["step2_bandgap/step2.1_static"]}
+                    submit_ncl_2d.tpl, submit_ncl_3d.tpl]}
       - {seq: 2.25, name: "step2_bandgap/step2.2_pbe_plot", label: S2.2_pbeplot,
          group: S2_bandgap, after: "step2_bandgap/step2.2_pbe",
          src: step2_bandgap/step2.2_pbe_plot, check: plot, run: gen,
          done_marker: band_summary.json, gen: "gen_step3.1_plot_band.py",
-         gen_need: [], fetch_all: true,
-     needs: ["step2_bandgap/step2.2_pbe"]}
+         gen_need: [], fetch_all: true}
   # HSE 分支单独一组：默认开=走到 HSE 带隙；BANDGAP=pbe（或 bandgap_hse: false）
   # 则整段跳过，只留 PBE 带隙。2.3 hse 从 2.2_pbe 继承，2.3_hse_plot 画 HSE 能带。
   bandgap_hse:
@@ -138,14 +127,12 @@ optional_steps:
          src: step2_bandgap/step2.3_hse, check: outcar, gen: gen_step4_HSE.py,
          gen_need: [dim_common.py, check_common.py, step4_check_and_resubmit.py,
                     incar_2d.tpl, incar_3d.tpl, submit_std_2d.tpl, submit_std_3d.tpl,
-                    submit_ncl_2d.tpl, submit_ncl_3d.tpl],
-     needs: ["step2_bandgap/step2.2_pbe"]}
+                    submit_ncl_2d.tpl, submit_ncl_3d.tpl]}
       - {seq: 2.35, name: "step2_bandgap/step2.3_hse_plot", label: S2.3_hseplot,
          group: S2_bandgap, after: "step2_bandgap/step2.3_hse",
          src: step2_bandgap/step2.3_hse_plot, check: plot, run: gen,
          done_marker: band_summary.json, gen: "gen_step4.1_plot_band.py",
-         gen_need: [], fetch_all: true,
-     needs: ["step2_bandgap/step2.3_hse"]}
+         gen_need: [], fetch_all: true}
 
 requires:
   python: [pymatgen, numpy, matplotlib, amset]

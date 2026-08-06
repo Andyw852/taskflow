@@ -49,13 +49,8 @@ def read_method_dim(method_file: Path):
     return None
 
 
-def write_method(path: Path, dim: str, note: str, func: str = None):
-    # patch_ke_dag：多记一行 FUNC=，让本步的泛函能被更下游的步骤继续继承
-    lines = ["DIM=%s" % dim.upper()]
-    if func:
-        lines.append("FUNC=%s" % func)
-    lines.append("# %s" % note)
-    path.write_text("\n".join(lines) + "\n",
+def write_method(path: Path, dim: str, note: str):
+    path.write_text("DIM=%s\n# %s\n" % (dim.upper(), note),
                     encoding="utf-8", newline="\n")
 
 
@@ -169,100 +164,3 @@ def patch_submit_jobname(submit: Path, jobname: str):
     text = submit.read_text(encoding="utf-8")
     text = text.replace("{{JOBNAME}}", jobname)
     submit.write_text(text, encoding="utf-8", newline="\n")
-
-
-# --------------------------------------------------------------------------
-# patch_ke_dag：泛函继承（从 step1 的 workflow_method.txt 读 FUNC=）
-# --------------------------------------------------------------------------
-# 为什么要继承：几何是 step1 用某个泛函优化出来的，下游单点用同一泛函才自洽。
-#   pbesol -> pbesol      同一套，论文里一句话说得清
-#   pbe    -> pbe
-#   pbe-d3 -> pbe-d3      D3 只加在总能/力/应力上，不进 KS 哈密顿量，
-#                         所以对 uniform / deform 的本征值是恒等操作（保留只为
-#                         INCAR 一致）；对 elastic 是必须保留的（应力有贡献）。
-# 例外：DFPT（IBRION=8）。VASP 手册明确写了 vdW 修正不进 DFPT 声子响应，
-#   写上 IVDW 只会污染总能而不改 ε₀ 的离子部分，所以 step5 默认剥掉，
-#   由 gen 脚本的 KEEP_D3_IN_DFPT 控制。
-FUNC_MAP = {
-    "pbe": {"GGA": "PE", "IVDW": None,
-            "VDW_LINE": "# IVDW disabled: plain PBE"},
-    "pbesol": {"GGA": "PS", "IVDW": None,
-               "VDW_LINE": "# IVDW disabled: PBEsol"},
-    "pbe-d3": {"GGA": "PE", "IVDW": "12",
-               "VDW_LINE": "IVDW   = 12            # PBE + DFT-D3(BJ)"},
-}
-SUPPORTED_FUNCS = tuple(FUNC_MAP)
-
-
-def read_method_func(method_file: Path):
-    """从 workflow_method.txt 读 FUNC=；读不到或不认识返回 None。"""
-    if not Path(method_file).is_file():
-        return None
-    for ln in Path(method_file).read_text(errors="ignore").splitlines():
-        if ln.strip().upper().startswith("FUNC="):
-            v = ln.split("=", 1)[1].strip().lower()
-            return v if v in FUNC_MAP else None
-    return None
-
-
-def sniff_func_from_incar(incar: Path):
-    """兜底：从 step1 的 INCAR 反推 GGA/IVDW。推不出返回 None。"""
-    if not Path(incar).is_file():
-        return None
-    gga, ivdw = "", None
-    for ln in Path(incar).read_text(errors="ignore").splitlines():
-        ln = ln.split("#", 1)[0].split("!", 1)[0].strip()
-        if "=" not in ln:
-            continue
-        k, v = ln.split("=", 1)
-        k, v = k.strip().upper(), v.strip()
-        if k == "GGA":
-            gga = v.upper()
-        elif k == "IVDW":
-            ivdw = v.split()[0] if v.split() else None
-    if gga == "PS" and ivdw is None:
-        return "pbesol"
-    if gga == "PE" and ivdw == "12":
-        return "pbe-d3"
-    if gga == "PE" and ivdw is None:
-        return "pbe"
-    return None
-
-
-def resolve_func(prev_dir: Path, setting, step_name, drop_d3=False,
-                 fallback="pbe"):
-    """定出本步用的泛函，返回 (func, subs)。
-
-    setting = "inherit" 时从 prev_dir/workflow_method.txt 读，读不到就嗅探
-    prev_dir/INCAR，再读不到用 fallback 并告警。
-    setting 直接写死泛函名时原样采用。
-    drop_d3=True 会把 pbe-d3 降级成 pbe（DFPT 专用）。
-    subs 是给 render_tpl 的占位符字典：{"GGA": ..., "VDW_LINE": ...}
-    """
-    s = str(setting).lower()
-    if s == "inherit":
-        func = read_method_func(Path(prev_dir) / METHOD_FILE)
-        src = "workflow_method.txt"
-        if func is None:
-            func = sniff_func_from_incar(Path(prev_dir) / "INCAR")
-            src = "嗅探 step1/INCAR"
-        if func is None:
-            func, src = fallback, "都读不到，回退默认值"
-            print("[WARN] %s：无法从 %s 判定泛函，回退 FUNC=%s。"
-                  "若 step1 是 pbesol/pbe-d3，结果会不自洽！"
-                  % (step_name, prev_dir, func))
-    elif s in FUNC_MAP:
-        func, src = s, "脚本内写死"
-    else:
-        sys.exit("[ERROR] %s：FUNC=%r 无效，只允许 inherit / %s"
-                 % (step_name, setting, " / ".join(FUNC_MAP)))
-
-    eff = func
-    if drop_d3 and func == "pbe-d3":
-        eff = "pbe"
-        print("[..] %s：DFPT 不支持 vdW 修正（VASP 手册），"
-              "pbe-d3 -> pbe（几何仍是 D3 优化的）" % step_name)
-    m = FUNC_MAP[eff]
-    print("[..] %s：泛函 %s（来源：%s）-> GGA=%s IVDW=%s"
-          % (step_name, eff, src, m["GGA"], m["IVDW"] or "off"))
-    return eff, {"GGA": m["GGA"], "VDW_LINE": m["VDW_LINE"]}

@@ -2967,80 +2967,12 @@ def cmd_status(cfg, data, mname, jname):
         render_table(data)
 
 
-
-def _start_ready(cfg, t, m, force, incl_scancel=False):
-    """patch_start_dag：把一个材料当前所有就绪步骤交掉，返回失败数。
-
-    就绪 = _dag_recompute 算出的 actives（依赖全 OK 的 TODO/PREP）。
-    没打过 DAG 补丁、或技能没写 needs 时 actives 里只会有一个，
-    行为退化成原来的"只交 active"。
-    """
-    fails = 0
-    ready = m.get("actives")
-    if ready is None:
-        s = m.get("active")
-        ready = [s] if s is not None else []
-    cap = _dag_max_inflight(cfg, m)
-    busy = sum(1 for x in m["steps"] if x["kind"] in _BUSY_KINDS)
-    fired = 0
-    for s in ready:
-        if s is None or s["kind"] in ("R", "PD", "OTHER", "OK"):
-            continue
-        if s["kind"] == "FAIL":
-            print("NEEDS_RETRY: %s [%s|%s] %s（确认后用 tf -tt %s -p '%s' "
-                  "-j %s retry）"
-                  % (m["name"], m["tt"], s["label"], s.get("diag", ""),
-                     m["tt"], m["name"], s["label"]))
-            continue
-        if s["kind"] == "SCANCEL" and not incl_scancel:
-            print("SCANCEL: %s [%s|%s] 曾被 tf stop 取消，不会自动重跑"
-                  "（重跑：tf -tt %s -p '%s' -j %s start，或 "
-                  "-status scancel start）"
-                  % (m["name"], m["tt"], s["label"], m["tt"], m["name"],
-                     s["label"]))
-            continue
-        if busy >= cap:
-            print("%s[%s]：在跑 %d 个已达上限 %d，剩下的没交"
-                  "（改 max_inflight 或 TF_MAX_INFLIGHT）"
-                  % (m["name"], m["tt"], busy, cap))
-            break
-        ok = do_submit(cfg, t, m, s, force, gen_first=False,
-                       contcar_cp=step_cfg(t, s["name"], m).get(
-                           "contcar_to_poscar", False),
-                       tag="start " + tag_of(m, s))
-        if ok:
-            fired += 1
-            busy += 1
-        else:
-            fails += 1
-    if not fired and not fails:
-        print("%s[%s]：没有可启动的步骤（都在跑、已完成，或被依赖卡住）。"
-              % (m["name"], m["tt"]))
-    return fails
-
-
-def _retry_targets(m, retryable):
-    """patch_start_dag：所有可 retry 的步骤（原来只看 active 一个）。"""
-    return [s for s in m["steps"] if retryable(s)]
-
-
 def guard_predecessors(m, s, force):
-    """-j 指定的步骤若前序未完成，需 -f 确认才继续。返回 True=可继续。
-
-    patch_start_dag：优先看 _dag_recompute 写进来的真实依赖 _deps；
-    没有 _deps 的技能（没写 needs 的 band/elastic/kl）回退成
-    "清单里排在它前面的都要 OK"，行为与改造前一致。
-    """
+    """-j 指定的步骤若前序未完成，需 -f 确认才继续。返回 True=可继续。"""
     if force:
         return True
-    deps = s.get("_deps")
-    if deps is not None:
-        byname = {x["name"]: x for x in m["steps"]}
-        bad = [byname[d] for d in deps
-               if d in byname and byname[d]["kind"] != "OK"]
-    else:
-        idx = m["steps"].index(s)
-        bad = [x for x in m["steps"][:idx] if x["kind"] != "OK"]
+    idx = m["steps"].index(s)
+    bad = [x for x in m["steps"][:idx] if x["kind"] != "OK"]
     if bad:
         print("%s: 前序步骤 %s 未完成（%s），gen 依赖上一步产物，不能直接生成；"
               "请先完成前序（或确认输入已手动就绪后加 -f 强制）。"
@@ -3076,29 +3008,39 @@ def cmd_start(cfg, data, mname, jname, force, incl_scancel=False):
         return fails
     if mname:
         t, m = find_material(data, mname)
-        if jname:
-            s = find_step(m, jname)
-            if not guard_predecessors(m, s, force):
-                return 1
-            if s is None:
-                print("%s: 工作流已全部完成（或可用 -j 指定步骤重新开始）。"
-                      % m["name"])
-                return 0
-            if s["kind"] == "FAIL" and not force:
-                print("%s: 步骤 %s 处于 FAIL，建议用 retry（保留文件）或 "
-                      "rerun（推倒重来）；确定要 start 请加 -f。"
-                      % (m["name"], s["label"]))
-                return 1
-            ok = do_submit(cfg, t, m, s, force, gen_first=False,
-                           contcar_cp=step_cfg(t, s["name"], m).get(
-                               "contcar_to_poscar", False),
-                           tag="start " + tag_of(m, s))
-            return 0 if ok else 1
-        # --- patch_start_dag：不带 -j 时交掉整个就绪集 -----------------
-        return _start_ready(cfg, t, m, force, incl_scancel)
+        s = find_step(m, jname) if jname else m["active"]
+        if jname and not guard_predecessors(m, s, force):
+            return 1
+        if s is None:
+            print("%s: 工作流已全部完成（或可用 -j 指定步骤重新开始）。" % m["name"])
+            return 0
+        if s["kind"] == "FAIL" and not force:
+            print("%s: 步骤 %s 处于 FAIL，建议用 retry（保留文件）或 rerun（推倒重来）；"
+                  "确定要 start 请加 -f。" % (m["name"], s["label"]))
+            return 1
+        ok = do_submit(cfg, t, m, s, force, gen_first=False,
+                       contcar_cp=step_cfg(t, s["name"], m).get("contcar_to_poscar", False),
+                       tag="start " + tag_of(m, s))
+        return 0 if ok else 1
     for t in data["types"]:
         for m in t["materials"]:
-            fails += _start_ready(cfg, t, m, force, incl_scancel)
+            s = m["active"]
+            if s is None or s["kind"] in ("R", "PD", "OTHER"):
+                continue
+            if s["kind"] == "FAIL":
+                print("NEEDS_RETRY: %s [%s|%s] %s（确认后用 tf -tt %s -p '%s' retry）"
+                      % (m["name"], m["tt"], s["label"], s["diag"], m["tt"], m["name"]))
+                continue
+            if s["kind"] == "SCANCEL" and not incl_scancel:
+                print("SCANCEL: %s [%s|%s] 曾被 tf stop 取消，不会自动重跑"
+                      "（重跑：tf -tt %s -p '%s' start，或 -status scancel start）"
+                      % (m["name"], m["tt"], s["label"], m["tt"], m["name"]))
+                continue
+            ok = do_submit(cfg, t, m, s, force, gen_first=False,
+                           contcar_cp=step_cfg(t, s["name"], m).get("contcar_to_poscar", False),
+                           tag="start " + tag_of(m, s))
+            if not ok:
+                fails += 1
     return fails
 
 
@@ -3225,31 +3167,21 @@ def cmd_retry(cfg, data, mname, jname, force, incl_scancel=False):
         return fails
     if mname:
         t, m = find_material(data, mname)
-        if jname:
-            s = find_step(m, jname)
-            if not guard_predecessors(m, s, force):
-                return 1
-            if s is None:
-                print("%s: 已全部完成。" % m["name"])
-                return 0
-            ok = retry_submit(cfg, t, m, s, force, "retry " + tag_of(m, s))
-            return 0 if ok else 1
-        # patch_start_dag：不带 -j 时重交所有 FAIL 步骤（可能分散在多条分支）
-        tgt = _retry_targets(m, _retryable)
-        if not tgt:
-            print("%s[%s]: 没有需要 retry 的步骤。" % (m["name"], m["tt"]))
+        s = find_step(m, jname) if jname else m["active"]
+        if jname and not guard_predecessors(m, s, force):
+            return 1
+        if s is None:
+            print("%s: 已全部完成。" % m["name"])
             return 0
-        for s in tgt:
-            if not retry_submit(cfg, t, m, s, force,
-                                "retry " + tag_of(m, s)):
-                fails += 1
-        return fails
+        ok = retry_submit(cfg, t, m, s, force, "retry " + tag_of(m, s))
+        return 0 if ok else 1
     for t in data["types"]:
         for m in t["materials"]:
-            for s in _retry_targets(m, _retryable):
-                if not retry_submit(cfg, t, m, s, force,
-                                    "retry " + tag_of(m, s)):
-                    fails += 1
+            s = m["active"]
+            if s is None or not _retryable(s):
+                continue
+            if not retry_submit(cfg, t, m, s, force, "retry " + tag_of(m, s)):
+                fails += 1
     return fails
 
 

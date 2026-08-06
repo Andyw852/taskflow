@@ -15,9 +15,7 @@ from pathlib import Path
 # =========================== 可改参数区 ===========================
 OUTDIR_NAME  = "step7b_deform_read"
 DEFORM_DIR   = "step7_deform"
-# patch_deform_fix：只匹配形变目录。绝不能用 "*deform*"——它会把
-# "undeformed" 自己也匹配进去，undeformed 必须单独作为 bulk 传给 read。
-DEFORM_GLOB  = "deform-*"
+DEFORM_GLOB  = "*deform*"
 AMSET_ENV_SRC = "source /public/home/wangchao/miniconda3/etc/profile.d/conda.sh && conda activate amset_clean"
 # =================================================================
 
@@ -32,13 +30,7 @@ def main():
 
     # 校验每个形变子目录都有 vasprun.xml，否则 read 会失败或给错结果
     subs = sorted(p for p in glob.glob(str(dfm / DEFORM_GLOB)) if os.path.isdir(p))
-    und = str(dfm / "undeformed")
-    if not os.path.isdir(und):
-        sys.exit("[ERROR] 缺 %s —— 它是形变势的参考态，没有它 read 无法对齐"
-                 % und)
-    subs.append(und)
-    if not [p for p in subs if p != und]:
-        sys.exit("[ERROR] %s 下没有 deform-* 子目录（step7 没跑或跑挂了）" % dfm)
+    subs += [p for p in [str(dfm / "undeformed")] if os.path.isdir(p)]
     missing = [os.path.basename(p) for p in subs
                if not (os.path.isfile(os.path.join(p, "vasprun.xml"))
                        or os.path.isfile(os.path.join(p, "vasprun.xml.gz")))]
@@ -48,11 +40,7 @@ def main():
                  % ", ".join(missing[:8]))
 
     # amset deform read 在形变目录里跑，产出 deformation.h5，再挪到本步目录
-    # patch_deform_fix：amset 的签名是 read(bulk_folder, deformation_folders...)，
-    # 【未形变的必须排第一个】。原来写成 `read *deform* undeformed`，既顺序
-    # 颠倒，又因为 "*deform*" 会匹配到 "undeformed" 自己，把第一个形变目录
-    # 当成了 bulk。这个错不报异常，只会安静地给出错误的形变势。
-    cmd = ("%s && cd %s && amset deform read undeformed %s "
+    cmd = ("%s && cd %s && amset deform read %s undeformed "
            ">> deform_read.log 2>&1"
            % (AMSET_ENV_SRC, str(dfm), DEFORM_GLOB))
     print("[..] amset deform read ...")

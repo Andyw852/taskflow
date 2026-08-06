@@ -1,5 +1,5 @@
 # =====================================================================
-# incar_deform_3d.tpl —— 形变势单点（3D）。每个 deform-NN / undeformed 一份。
+# incar_deform_3d.tpl —— 形变势单点（2D）。每个 deform-NN / undeformed 一份。
 # 固定结构单点，收紧 EDIFF 取精确带边能量。占位符：{{SYSTEM}} {{ENCUT}} {{GGA}}
 # =====================================================================
 SYSTEM = {{SYSTEM}}
@@ -7,7 +7,6 @@ SYSTEM = {{SYSTEM}}
 ISTART = 0
 ICHARG = 2
 GGA    = {{GGA}}
-{{VDW_LINE}}
 
 PREC   = Accurate
 ENCUT  = {{ENCUT}}
@@ -18,6 +17,7 @@ ALGO   = Normal
 EDIFF  = 1E-7          # 带边能量差，收紧
 NELM   = 200
 NELMIN = 6
+AMIN   = 0.01          # 2D 长真空层电子步稳定
 ISMEAR = 0
 SIGMA  = 0.05
 
@@ -31,4 +31,4 @@ LCHARG = .FALSE.
 LORBIT = 0
 
 NCORE  = 6
-KPAR   = 4
+KPAR   = 2

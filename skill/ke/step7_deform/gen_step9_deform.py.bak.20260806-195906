@@ -25,77 +25,29 @@ DIMENSION    = "auto"
 VASPKIT_EXE  = "vaspkit"
 KSCHEME      = "2"
 KSPACING     = "0.03"
-FUNC         = "inherit"      # patch_ke_dag: inherit=继承 step1
-# 注意：本步必须和 step3_uniform 同泛函，否则形变势里会掺进泛函差异
+FUNC         = "pbe"
 MANUAL_ENCUT = None
 ENCUT_FACTOR = 1.5
 STEP_LABEL   = "S7_deform"
 AMSET_ENV_SRC = "source /public/home/wangchao/miniconda3/etc/profile.d/conda.sh && conda activate amset_clean"
 DEFORM_GLOB  = "*deform*"      # 与 skill.yaml 的 fanout 一致
-                               # （同时匹配 deform-NNN 和 undeformed，两者都要交）
-# patch_deform_fix：形变幅度，amset 默认 0.005 = ±0.5%，形变势对 ±0.5% 取平均
-STRAIN_DISTANCE = 0.005
-# 对称精度：None = amset 默认 0.01；"N" = 完全关对称（12 个形变全算）；
-# 也可写数值。放宽它能减少不等价形变数，但要确认放宽后的空间群是对的。
-SYMPREC      = None
 # =================================================================
 GGA_MAP = {"pbe": "PE", "pbesol": "PS", "pbe-d3": "PE"}
 
 
 def run_amset_deform_create(out: Path):
-    """在 out 目录跑 amset deform create，再把产出的 POSCAR-NNN 摊成子目录。
-
-    patch_deform_fix：amset 的 create 子命令
-      - 不吃位置参数，结构文件走 -f/--filename；
-      - 产出的是【文件】POSCAR-001 / POSCAR-002 …（位数随总数变），
-        写在当前目录，【不建任何子目录，也不建 undeformed/】。
-    所以目录结构得我们自己摊：
-        undeformed/POSCAR   <- 原始（未形变）结构
-        deform-001/POSCAR   <- POSCAR-001
-        deform-002/POSCAR   <- POSCAR-002
-        ...
-    skill.yaml 的 fanout "*deform*" 同时匹配 deform-NNN 和 undeformed，
-    两者都会被提交——undeformed 是形变势的参考态，不能漏。
-    """
+    """在 out 目录跑 amset deform create（读 POSCAR，写 undeformed/ + deform-NN/）。"""
     import glob
-    import shutil as _sh
-
-    done = [p for p in glob.glob(str(out / "deform-*")) if os.path.isdir(p)]
-    if done and (out / "undeformed").is_dir():
-        print("[..] 已有形变子目录 %d 个 + undeformed，跳过 create（幂等）"
-              % len(done))
+    existing = glob.glob(str(out / "*deform*")) + glob.glob(str(out / "undeformed"))
+    if existing:
+        print("[..] 已有形变子目录 %d 个，跳过 amset deform create（幂等）" % len(existing))
         return
-
-    opts = "-f POSCAR -d %s" % STRAIN_DISTANCE
-    if SYMPREC is not None:
-        opts += " -s %s" % SYMPREC
-    cmd = ("%s && cd %s && amset deform create %s >> deform_create.log 2>&1"
-           % (AMSET_ENV_SRC, str(out), opts))
-    print("[..] amset deform create %s ..." % opts)
+    cmd = "%s && cd %s && amset deform create POSCAR >> deform_create.log 2>&1" \
+          % (AMSET_ENV_SRC, str(out))
+    print("[..] amset deform create ...")
     rc = subprocess.run(["bash", "-lc", cmd]).returncode
     if rc != 0:
         sys.exit("[ERROR] amset deform create 失败，看 %s/deform_create.log" % out)
-
-    poscars = sorted(Path(p) for p in glob.glob(str(out / "POSCAR-*")))
-    if not poscars:
-        sys.exit("[ERROR] amset deform create 没有产出 POSCAR-NNN，"
-                 "看 %s/deform_create.log" % out)
-
-    src_poscar = out / "POSCAR"
-    if not src_poscar.is_file():
-        sys.exit("[ERROR] %s 缺原始 POSCAR，无法建 undeformed/" % out)
-    und = out / "undeformed"
-    und.mkdir(exist_ok=True)
-    _sh.copy2(str(src_poscar), str(und / "POSCAR"))
-    print("[OK] undeformed/POSCAR（参考态）")
-
-    for p in poscars:
-        tag = p.name.split("-", 1)[1]          # POSCAR-003 -> 003
-        d = out / ("deform-%s" % tag)
-        d.mkdir(exist_ok=True)
-        _sh.copy2(str(p), str(d / "POSCAR"))
-    print("[OK] 摊出 %d 个 deform-NNN 子目录（+ undeformed，共 %d 个单点）"
-          % (len(poscars), len(poscars) + 1))
 
 
 def main():
@@ -105,15 +57,13 @@ def main():
     if prev is None:
         sys.exit("[ERROR] 找不到含 CONTCAR 的上一步：%s" % PREV_CANDS)
     kc.relay_poscar(prev / "CONTCAR", out / "POSCAR", "step1_opt")
-    _func, _subs = kc.resolve_func(prev, FUNC, OUTDIR_NAME)
     dim = kc.read_method_dim(prev / kc.METHOD_FILE) \
         or kc.resolve_dim_for(out / "POSCAR", DIMENSION)[0]
     _, vac_axis = kc.resolve_dim_for(out / "POSCAR", dim)
     require_dim(dim, ('2d', '3d'), "step7_deform",
                 why="载流子输运/形变势建立在能带色散上，孤立分子没有色散")
     print("[..] 维度：%s" % dim.upper())
-    kc.write_method(out / kc.METHOD_FILE, dim, "形变势单点（扇出）",
-                    func=_func)
+    kc.write_method(out / kc.METHOD_FILE, dim, "形变势单点（扇出）")
 
     run_amset_deform_create(out)
 
@@ -135,10 +85,8 @@ def main():
         kc.vaspkit_potcar(d, VASPKIT_EXE)
         if encut is None:
             encut = MANUAL_ENCUT or kc.encut_from_potcar(d / "POTCAR", ENCUT_FACTOR)
-        _sub = {"SYSTEM": "%s deform %s" % (cwd.name, d.name),
-                "ENCUT": encut}
-        _sub.update(_subs)
-        kc.render_tpl(tpl, _sub, d / "INCAR")
+        kc.render_tpl(tpl, {"SYSTEM": "%s deform %s" % (cwd.name, d.name),
+                            "ENCUT": encut, "GGA": GGA_MAP[FUNC]}, d / "INCAR")
         sub = d / "submit.sh"
         sub.write_text(submit_body.replace(
             "{{JOBNAME}}", "%s-ke-%s-%s" % (cwd.name, STEP_LABEL, d.name)),

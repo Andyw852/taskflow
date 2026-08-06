@@ -1,5 +1,5 @@
 # =====================================================================
-# incar_dfpt_3d.tpl —— DFPT 介电常数（2D，IBRION=8 + LEPSILON）
+# incar_dfpt_3d.tpl —— DFPT 介电常数（3D，IBRION=8 + LEPSILON）
 # 一次微扰求 ε∞ 和 ε₀（离子+电子）。占位符：{{SYSTEM}} {{ENCUT}} {{GGA}}
 # 【注意】DFPT 与 k 点并行不兼容 → 必须 KPAR=1；NCORE 也必须 =1。
 # =====================================================================
@@ -8,7 +8,6 @@ SYSTEM = {{SYSTEM}}
 ISTART = 0
 ICHARG = 2
 GGA    = {{GGA}}
-{{VDW_LINE}}
 
 PREC   = Accurate
 ENCUT  = {{ENCUT}}
@@ -19,7 +18,6 @@ ALGO   = Normal
 EDIFF  = 1E-8
 NELM   = 200
 NELMIN = 6
-AMIN   = 0.01          # 2D 长真空层电子步稳定
 ISMEAR = 0
 SIGMA  = 0.05
 

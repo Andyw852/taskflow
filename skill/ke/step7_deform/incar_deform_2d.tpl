@@ -7,6 +7,7 @@ SYSTEM = {{SYSTEM}}
 ISTART = 0
 ICHARG = 2
 GGA    = {{GGA}}
+{{VDW_LINE}}
 
 PREC   = Accurate
 ENCUT  = {{ENCUT}}

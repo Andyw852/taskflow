@@ -47,13 +47,11 @@ ELASTIC_DIR = "step6_elastic"
 # --- patch_2d_amset：2D 修正 ---------------------------------------------
 # TWO_D_MODE: "auto" = 读 step1 的 workflow_method.txt 的 DIM=；"on"/"off" 强制。
 TWO_D_MODE = "auto"
-# LAYER_THICKNESS: 层的有效厚度（Å）。三种取值：
-#   "vdw"  （默认）自动 = 原子核 z 跨度 + 两侧最外层元素各一个范德华半径。
-#          这是 2D 文献做 h/d0 重标度时的通行取法，确定、可复现、可引用。
-#   "span" 只用原子核 z 跨度。偏小 -> C 偏大 -> 迁移率偏高，一般别用。
-#   数值    手填（Å）。已知对应体相层间距时优先用这个。
-# 无论哪种，最终用的 c/t/取法/倍数都会落盘到 step8_amset/2d_correction.json。
-LAYER_THICKNESS = "vdw"
+# LAYER_THICKNESS: 层的有效厚度（Å）。None = 用结构里原子的 z 向跨度自动估。
+#   自动估的是"原子核到原子核"的厚度，普遍偏小（没算两侧的电子云/vdW 半径），
+#   会让 C 偏大、迁移率偏高。发文章务必手填一个说得清来源的值，
+#   常见取法：对应体相的层间距，或 z 跨度 + 两侧各一个 vdW 半径。
+LAYER_THICKNESS = None
 # 2D 时给 settings.yaml 写 free_carrier_screening: true
 FREE_CARRIER_SCREENING_2D = True
 # 找结构的候选目录（按序取第一个有 POSCAR/CONTCAR 的）
@@ -164,108 +162,6 @@ def link(out: Path, src: Path, name: str):
 # --------------------------------------------------------------------------
 # patch_2d_amset：2D 几何与弹性常数重标度
 # --------------------------------------------------------------------------
-# --------------------------------------------------------------------------
-# patch_2d_thickness：范德华半径表与 vdW 层厚
-# --------------------------------------------------------------------------
-# Bondi(1964) + Alvarez(2013) 常用值，单位 Å。故意内置而不用 pymatgen：
-# gen 脚本在登录节点用系统 python 跑，ke_common 的设计就是不引入 pymatgen。
-VDW_RADII = {
-    "H": 1.20, "He": 1.40, "Li": 1.82, "Be": 1.53, "B": 1.92, "C": 1.70,
-    "N": 1.55, "O": 1.52, "F": 1.47, "Ne": 1.54, "Na": 2.27, "Mg": 1.73,
-    "Al": 1.84, "Si": 2.10, "P": 1.80, "S": 1.80, "Cl": 1.75, "Ar": 1.88,
-    "K": 2.75, "Ca": 2.31, "Sc": 2.15, "Ti": 2.11, "V": 2.07, "Cr": 2.06,
-    "Mn": 2.05, "Fe": 2.04, "Co": 2.00, "Ni": 1.97, "Cu": 1.96, "Zn": 2.01,
-    "Ga": 1.87, "Ge": 2.11, "As": 1.85, "Se": 1.90, "Br": 1.85, "Kr": 2.02,
-    "Rb": 3.03, "Sr": 2.49, "Y": 2.32, "Zr": 2.23, "Nb": 2.18, "Mo": 2.17,
-    "Tc": 2.16, "Ru": 2.13, "Rh": 2.10, "Pd": 2.10, "Ag": 2.11, "Cd": 2.18,
-    "In": 1.93, "Sn": 2.17, "Sb": 2.06, "Te": 2.06, "I": 1.98, "Xe": 2.16,
-    "Cs": 3.43, "Ba": 2.68, "La": 2.43, "Ce": 2.42, "Pr": 2.40, "Nd": 2.39,
-    "Sm": 2.36, "Eu": 2.35, "Gd": 2.34, "Tb": 2.33, "Dy": 2.31, "Ho": 2.30,
-    "Er": 2.29, "Tm": 2.27, "Yb": 2.26, "Lu": 2.24, "Hf": 2.23, "Ta": 2.22,
-    "W": 2.18, "Re": 2.16, "Os": 2.16, "Ir": 2.13, "Pt": 2.13, "Au": 2.14,
-    "Hg": 2.23, "Tl": 1.96, "Pb": 2.02, "Bi": 2.07, "Po": 1.97, "At": 2.02,
-    "Rn": 2.20, "Th": 2.43, "U": 2.41,
-}
-VDW_FALLBACK = 2.00      # 表里没有的元素用这个，并告警
-
-
-def _read_poscar_species_z(path: Path):
-    """返回 [(元素符号, z 坐标 Å), ...] 和 c 轴长度。解析失败返回 (None, None)。"""
-    try:
-        lines = path.read_text(encoding="utf-8-sig",
-                               errors="ignore").splitlines()
-        scale = float(lines[1].split()[0])
-        vecs = [[float(x) * scale for x in lines[i].split()[:3]] for i in (2, 3, 4)]
-        c_len = (vecs[2][0] ** 2 + vecs[2][1] ** 2 + vecs[2][2] ** 2) ** 0.5
-        row6 = lines[5].split()
-        if row6 and row6[0].lstrip("-").isdigit():
-            return None, c_len              # VASP4 无元素符号行，认不出元素
-        symbols = row6
-        counts = [int(x) for x in lines[6].split()]
-        start = 8
-        mode = lines[7].strip().lower()
-        if mode[:1] == "s":                 # Selective dynamics
-            mode = lines[8].strip().lower()
-            start = 9
-        direct = mode[:1] in ("d", "")
-        species = []
-        for sym, n in zip(symbols, counts):
-            species += [sym] * n
-        out = []
-        for sym, ln in zip(species, lines[start:start + len(species)]):
-            p = ln.split()
-            if len(p) < 3:
-                continue
-            z = float(p[2])
-            out.append((sym, z * c_len if direct else z))
-        return (out or None), c_len
-    except Exception as e:                  # noqa: BLE001
-        print("[WARN] 解析 %s 的元素/坐标失败：%s" % (path, e))
-        return None, None
-
-
-def vdw_thickness(cwd: Path):
-    """t_vdW = (z_max + r_vdW[最上层元素]) - (z_min - r_vdW[最下层元素])。
-
-    返回 (t, 说明字典)；认不出元素时返回 (None, 说明)。
-    """
-    for d in STRUCT_CANDS:
-        for fn in ("CONTCAR", "POSCAR"):
-            p = cwd / d / fn
-            if not p.is_file():
-                continue
-            az, c_len = _read_poscar_species_z(p)
-            if not az:
-                continue
-            top = max(az, key=lambda x: x[1])
-            bot = min(az, key=lambda x: x[1])
-            miss = [s for s in (top[0], bot[0]) if s not in VDW_RADII]
-            if miss:
-                print("[WARN] 范德华半径表里没有 %s，用 %.2f Å 兜底"
-                      % ("/".join(miss), VDW_FALLBACK))
-            r_top = VDW_RADII.get(top[0], VDW_FALLBACK)
-            r_bot = VDW_RADII.get(bot[0], VDW_FALLBACK)
-            t = (top[1] + r_top) - (bot[1] - r_bot)
-            info = {
-                "source_file": "%s/%s" % (d, fn),
-                "z_span_A": round(top[1] - bot[1], 4),
-                "top_species": top[0], "top_vdw_radius_A": r_top,
-                "bottom_species": bot[0], "bottom_vdw_radius_A": r_bot,
-                "vdw_radii_source": "Bondi 1964 / Alvarez 2013",
-                "thickness_A": round(t, 4),
-            }
-            return round(t, 4), info
-    return None, {"error": "找不到可解析元素符号的 POSCAR/CONTCAR"}
-
-
-def write_2d_record(out: Path, record):
-    import json
-    (out / "2d_correction.json").write_text(
-        json.dumps(record, indent=2, ensure_ascii=False) + "\n",
-        encoding="utf-8", newline="\n")
-    print("[OK] 2d_correction.json：修正依据已落盘（写论文直接引用）")
-
-
 def read_dim(cwd: Path):
     """从 step1 的 workflow_method.txt 读 DIM=（'2d'/'3d'），读不到返回 None。"""
     for name in _STEP1_METHOD_CANDS:
@@ -375,38 +271,16 @@ def apply_2d_corrections(cwd: Path, elastic):
               "结果的绝对值不可用。请手填 MANUAL_ELASTIC。")
         return True, elastic, None
 
-    # patch_2d_thickness：层厚三种取法，结果连同依据一起落盘
-    mode_t = LAYER_THICKNESS
-    t_info = {}
-    if isinstance(mode_t, str) and mode_t.lower() == "vdw":
-        t, t_info = vdw_thickness(cwd)
-        t_info["method"] = "vdw"
-        if t is None:
-            print("[WARN] 认不出元素（VASP4 格式 POSCAR？），vdW 层厚失败，"
-                  "回退到原子 z 跨度 %s Å" % span)
-            t, t_info = span, {"method": "span_fallback",
-                               "z_span_A": span}
-        else:
-            print("[OK] vdW 层厚：z 跨度 %.3f Å + %s(%.2f) + %s(%.2f) = %.3f Å"
-                  % (t_info["z_span_A"], t_info["top_species"],
-                     t_info["top_vdw_radius_A"], t_info["bottom_species"],
-                     t_info["bottom_vdw_radius_A"], t))
-    elif isinstance(mode_t, str) and mode_t.lower() == "span":
-        t, t_info = span, {"method": "span", "z_span_A": span}
-        print("[WARN] LAYER_THICKNESS='span'：只用核-核跨度 %s Å，"
-              "偏小 -> C 偏大 -> 迁移率偏高" % t)
-    elif mode_t is None:
-        t, t_info = span, {"method": "span_legacy", "z_span_A": span}
-        print("[WARN] LAYER_THICKNESS=None：用核-核跨度 %s Å。"
-              "建议改成 \"vdw\" 或手填。" % t)
-    else:
-        t, t_info = mode_t, {"method": "manual"}
-        print("[OK] LAYER_THICKNESS 手填 %s Å" % t)
-
-    if t is None or float(t) <= 0.1:
-        print("[WARN] 2D 体系但定不出层厚，弹性常数未做 c/t 修正。"
-              "请手填 LAYER_THICKNESS。")
-        return True, elastic, c_len
+    t = LAYER_THICKNESS
+    if t is None:
+        t = span
+        if t is None or t <= 0.1:
+            print("[WARN] 2D 体系但估不出层厚，弹性常数未做 c/t 修正。"
+                  "请手填 LAYER_THICKNESS。")
+            return True, elastic, c_len
+        print("[WARN] LAYER_THICKNESS 未手填，自动用原子 z 跨度 %.3f Å。"
+              "这是核-核厚度，偏小 -> C 偏大 -> 迁移率偏高。"
+              "发文章请手填并写明来源。" % t)
     t = float(t)
     if t <= 0 or t >= c_len:
         sys.exit("[ERROR] LAYER_THICKNESS=%s Å 不合理（c=%.3f Å）" % (t, c_len))
@@ -418,21 +292,6 @@ def apply_2d_corrections(cwd: Path, elastic):
     else:
         print("[OK] 2D 弹性常数重标度：c=%.3f Å / t=%.3f Å -> ×%.3f"
               % (c_len, t, factor))
-    # patch_2d_thickness：把全部依据落盘，写论文直接引用
-    t_info["thickness_used_A"] = round(t, 4)
-    write_2d_record(cwd / OUTDIR_NAME, {
-        "cell_c_A": round(c_len, 4),
-        "layer_thickness": t_info,
-        "elastic_rescale_factor_c_over_t": round(factor, 4),
-        "elastic_constant_raw_GPa": elastic,
-        "elastic_constant_rescaled_GPa": new_elastic,
-        "areal_density_factor_cm": c_len * 1e-8,
-        "areal_density_note": "n_2D [cm^-2] = n_3D [cm^-3] x cell_c [cm]",
-        "free_carrier_screening": bool(FREE_CARRIER_SCREENING_2D),
-        "limitation": ("POP 用三维 Fröhlich 形式；二维极性材料的 Fröhlich "
-                       "耦合 q 依赖不同，属定性偏差。结果只可横向比较，"
-                       "绝对值不可信。可发表的迁移率请用 Perturbo / EPW。"),
-    })
     return True, new_elastic, c_len
 
 

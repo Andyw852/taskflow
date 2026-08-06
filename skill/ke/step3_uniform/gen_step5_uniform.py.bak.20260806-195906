@@ -23,8 +23,7 @@ DIMENSION    = "auto"                 # auto | 2d | 3d
 VASPKIT_EXE  = "vaspkit"
 KSCHEME      = "2"                    # 2 = Γ 心
 KSPACING     = "0.03"                 # ★AMSET 密网格；要更密改这里
-FUNC         = "inherit"              # patch_ke_dag: inherit=继承 step1
-                                      # 也可写死 pbe | pbesol | pbe-d3
+FUNC         = "pbe"                  # pbe | pbesol | pbe-d3
 MANUAL_ENCUT = None                   # None=从 POTCAR 自动；或写数值
 ENCUT_FACTOR = 1.5
 STEP_LABEL   = "S3_uniform"
@@ -42,7 +41,6 @@ def main():
     if prev is None:
         sys.exit("[ERROR] 找不到含 CONTCAR 的上一步目录：%s" % PREV_CANDS)
     kc.relay_poscar(prev / "CONTCAR", out / "POSCAR", "step1_opt")
-    _func, _subs = kc.resolve_func(prev, FUNC, OUTDIR_NAME)
 
     dim = kc.read_method_dim(prev / kc.METHOD_FILE)
     if dim is None:
@@ -52,8 +50,7 @@ def main():
         require_dim(dim, ('2d', '3d'), "step3_uniform",
                     why="载流子输运/形变势建立在能带色散上，孤立分子没有色散")
     print("[..] 维度：%s" % dim.upper())
-    kc.write_method(out / kc.METHOD_FILE, dim, "uniform 密网格自洽",
-                    func=_func)
+    kc.write_method(out / kc.METHOD_FILE, dim, "uniform 密网格自洽")
 
     kc.vaspkit_kpoints(out, KSCHEME, KSPACING, VASPKIT_EXE, dim, vac_axis)
     kc.vaspkit_potcar(out, VASPKIT_EXE)
@@ -63,9 +60,8 @@ def main():
     if not tpl.is_file():
         sys.exit("[ERROR] 找不到模板 %s" % tpl.name)
     system = cwd.name + " uniform"
-    _sub = {"SYSTEM": system, "ENCUT": encut}
-    _sub.update(_subs)
-    kc.render_tpl(tpl, _sub, out / "INCAR")
+    kc.render_tpl(tpl, {"SYSTEM": system, "ENCUT": encut, "GGA": GGA_MAP[FUNC]},
+                  out / "INCAR")
 
     submit_tpl = resolve_tpl(Path(__file__).resolve().parent, "submit_std", dim)
     submit = out / "submit.sh"
