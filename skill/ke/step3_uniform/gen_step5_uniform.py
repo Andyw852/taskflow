@@ -14,7 +14,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import ke_common as kc
-from dim_common import require_dim  # noqa: E402
+from dim_common import require_dim, resolve_tpl  # noqa: E402
 
 # =========================== 可改参数区 ===========================
 OUTDIR_NAME  = "step3_uniform"
@@ -63,9 +63,9 @@ def main():
     kc.render_tpl(tpl, {"SYSTEM": system, "ENCUT": encut, "GGA": GGA_MAP[FUNC]},
                   out / "INCAR")
 
+    submit_tpl = resolve_tpl(Path(__file__).resolve().parent, "submit_std", dim)
     submit = out / "submit.sh"
-    if not submit.is_file():
-        sys.exit("[ERROR] submit.sh 未推送到 %s（检查 gen_need 里的 submit 模板）" % out)
+    submit.write_text(submit_tpl.read_text(encoding="utf-8"), encoding="utf-8", newline="\n")
     kc.patch_submit_jobname(submit, kc.new_jobname(cwd, STEP_LABEL))
 
     print("[DONE] %s：INCAR/KPOINTS/POTCAR/POSCAR 就绪，可提交" % OUTDIR_NAME)

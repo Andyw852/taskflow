@@ -51,7 +51,7 @@ steps:
 
   - {seq: 3, name: step3_uniform, label: S3_uniform, src: step3_uniform,
      check: wavecar, gen: gen_step5_uniform.py,
-     gen_need: [dim_common.py, check_common.py,
+     gen_need: [ke_common.py, dim_common.py, check_common.py,
                 incar_uniform_2d.tpl, incar_uniform_3d.tpl,
                 submit_std_2d.tpl, submit_std_3d.tpl]}
 
@@ -62,7 +62,7 @@ steps:
   - {seq: 5, name: step5_dielect, label: S5_dielect, src: step5_dielect,
      check: marker, marker: "OUTCAR:MACROSCOPIC STATIC DIELECTRIC TENSOR",
      gen: gen_step8_dielect.py,
-     gen_need: [dim_common.py, check_common.py,
+     gen_need: [ke_common.py, dim_common.py, check_common.py,
                 incar_dfpt_2d.tpl, incar_dfpt_3d.tpl,
                 submit_std_2d.tpl, submit_std_3d.tpl]}
 
@@ -74,7 +74,7 @@ steps:
 
   - {seq: 7, name: step7_deform, label: S7_deform, src: step7_deform,
      check: outcar, fanout: "*deform*", gen: gen_step9_deform.py,
-     gen_need: [dim_common.py, incar_deform_2d.tpl, incar_deform_3d.tpl,
+     gen_need: [ke_common.py, dim_common.py, incar_deform_2d.tpl, incar_deform_3d.tpl,
                 submit_std_2d.tpl, submit_std_3d.tpl]}
 
   - {seq: 7.1, name: step7b_deform_read, label: S7.1_read, src: step7_deform/step7b_read,

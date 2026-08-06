@@ -16,7 +16,7 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import ke_common as kc
-from dim_common import require_dim  # noqa: E402
+from dim_common import require_dim, resolve_tpl  # noqa: E402
 
 # =========================== 可改参数区 ===========================
 OUTDIR_NAME  = "step7_deform"
@@ -73,9 +73,7 @@ def main():
     print("[..] 形变子目录 %d 个，逐个补输入" % len(subs))
 
     tpl = Path(__file__).resolve().parent / ("incar_deform_%s.tpl" % dim)
-    submit_tpl = out / "submit.sh"   # 逻辑名，tf 已按 template_map 落地到步骤目录
-    if not submit_tpl.is_file():
-        sys.exit("[ERROR] submit.sh 未推送到 %s" % out)
+    submit_tpl = resolve_tpl(Path(__file__).resolve().parent, "submit_std", dim)
     submit_body = submit_tpl.read_text(encoding="utf-8")
 
     encut = None
