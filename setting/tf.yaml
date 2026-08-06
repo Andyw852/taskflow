@@ -12,7 +12,7 @@ host: jzzn
 # 项目根列表：tf 扫描其下 project_setting/tf_*.yaml（最深三层：
 # 体系级 项目根/C20/project_setting/、材料级 项目根/C20/qHPC20/project_setting/）
 project_roots:
-  - /home/wangchao/Fullerene_Network
+  - /mnt/d/tf_data
 
 # 全自动流水线开关（默认关）。开 = 每次 tf / tf watch 自动提交可开始的步骤。
 # 单个项目想单独关闭，在它的 project_setting/setting.yaml 写 auto_advance: false

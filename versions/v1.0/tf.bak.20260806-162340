@@ -2009,26 +2009,6 @@ def _group_info(ms):
     return "-"
 
 
-def _step_dirname(s):
-    """patch_auto2：步骤在超算上的目录名（basename）。dir 缺失时退回 name。
-    通用取法，不依赖任何技能的命名约定。"""
-    d = s.get("dir") or s.get("name") or ""
-    return os.path.basename(str(d).rstrip("/")) or "-"
-
-
-def _group_dir(ms):
-    """patch_auto2：分组列第三行——当前落在哪个子步骤（显示其超算目录名）。
-    有作业的优先（和第二行的作业号对得上）；否则取第一个未完成的；
-    全完成则显示最后一个子步骤。"""
-    for s in ms:
-        if s.get("job"):
-            return _step_dirname(s)
-    for s in ms:
-        if s["kind"] != "OK":
-            return _step_dirname(s)
-    return _step_dirname(ms[-1]) if ms else "-"
-
-
 def render_table(data):
     types = data["types"]
     # v1.3.3：多技能按类型分表——此前全局列 = 所有技能步骤的并集，
@@ -2068,29 +2048,25 @@ def render_table(data):
         print("没有找到任何材料目录。")
         return
     headers = ["Material", "tt", "hpc", "dim"] + labels   # v1.1：去掉总体 Status 列
-    # patch_auto2：row3 = 分组列当前子步骤的超算目录名
-    pairs = []  # (t, row1, row2, row3)
+    pairs = []  # (t, row1, row2)；row1 = 各步骤状态词；row2 = 节点/任务号/时长
     for t, m in all_mats:
         cols = {}
         for s in m["steps"]:
             cols.setdefault(col_of(m, s), []).append(s)
-        word, act, sub = {}, {}, {}
+        word, act = {}, {}
         for c, ms in cols.items():
             if len(ms) == 1:
                 word[c] = _cell_word(ms[0])
                 act[c] = _cell_info(ms[0])
-                sub[c] = "-"
             else:
                 word[c] = _group_word(ms)
                 act[c] = _group_info(ms)
-                sub[c] = _group_dir(ms)
         hpc = m.get("hpc_name") or data.get("host") or "-"
         dim = m.get("dim") or "-"
         row1 = [m["name"], t["key"], hpc, dim] + [word.get(x, "") for x in labels]
         row2 = ["", "", "", ""] + [act.get(x, "") for x in labels]
-        row3 = ["", "", "", ""] + [sub.get(x, "") for x in labels]
-        pairs.append((t, row1, row2, row3))
-    rows = [r for _, r1, r2, r3 in pairs for r in (r1, r2, r3)]
+        pairs.append((t, row1, row2))
+    rows = [r for _, r1, r2 in pairs for r in (r1, r2)]
     widths = [max(len(h), *(len(r[i]) for r in rows)) for i, h in enumerate(headers)]
 
     def line(ch="-"):
@@ -2103,13 +2079,11 @@ def render_table(data):
     print(fmt(headers))
     print(line("="))
     prev_tt = None
-    for t, r1, r2, r3 in pairs:
+    for t, r1, r2 in pairs:
         if prev_tt is not None and t["key"] != prev_tt:
             print(line())
         print(fmt(r1))
         print(fmt(r2))
-        if any(c not in ("", "-") for c in r3):   # patch_auto2：没内容就不占行
-            print(fmt(r3))
         prev_tt = t["key"]
     print(line())
 
@@ -2771,14 +2745,6 @@ def do_run_gen_step(cfg, t, m, s, tag):
         log_action(m, "plot %s（生成 %s）" % (s["label"], s["dir"]))
         _fetch_stamp_clear(m, s["name"])   # v1.11：产物已更新，让 auto-fetch 重拉
         _scancel_clear(m, s["name"])       # v1.4：重跑成功，清 stop 标记
-        if m.get("result_dir"):   # patch_auto2：即时步产物立刻拉回，
-            s["done"], s["exists"] = True, True   # 不等下一轮 auto_fetch
-            try:
-                if fetch_material(cfg, m, only_steps={s["name"]}, quiet=True):
-                    print("%s: 已拉回 → %s"
-                          % (tag, os.path.join(m["result_dir"], s["name"])))
-            except Exception as _e:   # noqa: BLE001
-                print("警告：拉回 %s 失败：%s" % (s["name"], _e), file=sys.stderr)
         return True
     tail = (out or "").strip().splitlines()
     print("%s: 脚本运行了但没产出 %s%s（状态将显示 error，检查日志后 retry）"
@@ -3258,9 +3224,6 @@ def rerun_project(cfg, t, m, yes):
     return do_submit(cfg, t, m, s0, force=False, gen_first=True, contcar_cp=False,
                      tag="rerun " + tag_of(m, first), submit=False)
 
-_AUTO_CASCADE_MAX = max(1, int(os.environ.get("TF_AUTO_CASCADE", "8") or 8))
-
-
 def auto_advance(cfg, data):
     """status 时自动推进可开始的步骤（全局 tf.yaml 写 auto_advance: true 开启；
     项目 setting.yaml 里 auto_advance: false 可单独关闭）。
@@ -3268,46 +3231,17 @@ def auto_advance(cfg, data):
     v1.4：SCANCEL（tf stop 打了标记的）同样不推进，须显式 start/retry/rerun。"""
     if not cfg.get("auto_advance"):
         return
-    _skipped = []
     for t in data["types"]:
         for m in t["materials"]:
             st = (m.get("ps") or {}).get("setting") or {}
             if st.get("auto_advance") is False:
-                _skipped.append("%s[%s]" % (m["name"], m["tt"]))
                 continue
-            # --- patch_auto: 级联推进 ------------------------------------
-            # 原实现每轮每材料只推一步。画图/读取这类 run:gen 的本地即时步
-            # 几秒就完成，却要白等一整个 watch 周期才轮到下一步。这里改成：
-            # 交了 SLURM 就停（等作业），本地即时步成功就接着往下推。
-            _done_now = []
-            for _ in range(_AUTO_CASCADE_MAX):
-                s = m.get("active")
-                if not s or s["kind"] not in ("TODO", "PREP"):
-                    break
-                sc = step_cfg(t, s["name"], m)
-                _ok = do_submit(cfg, t, m, s, False, True,
-                                sc.get("contcar_to_poscar"),
-                                "auto %s[%s|%s]"
-                                % (m["name"], m["tt"], s["label"]))
-                if not _ok or sc.get("run") != "gen":
-                    break
-                # 即时步已产出 done_marker：就地标完成，把 active 挪到下一步
-                s["done"], s["exists"] = True, True
-                s["kind"], s["label_txt"] = "OK", "OK"
-                if "diag" in s:
-                    s["diag"] = "completed"
-                _done_now.append(s["name"])
-                m["active"] = next((x for x in m["steps"]
-                                    if x["kind"] != "OK"), None)
-            # patch_auto2：产物已在 do_run_gen_step 里当场拉回，这里不再重复
-            # --- patch_auto end ------------------------------------------
-
-
-    if _skipped:
-        print("auto-advance 跳过 %d 个（项目级 auto_advance: false）：%s"
-              "  → tf -tt <技能> -p <材料> auto on"
-              % (len(_skipped), ", ".join(_skipped[:6])
-                 + ("…" if len(_skipped) > 6 else "")))
+            s = m.get("active")
+            if not s or s["kind"] not in ("TODO", "PREP"):
+                continue
+            sc = step_cfg(t, s["name"], m)
+            do_submit(cfg, t, m, s, False, True, sc.get("contcar_to_poscar"),
+                      "auto %s[%s|%s]" % (m["name"], m["tt"], s["label"]))
 
 
 def cmd_step_init(cfg, data, proj, job, force):
@@ -4264,46 +4198,6 @@ def cmd_auto_project(cfg, types, proj, tt, arg):
     return fails
 
 
-def _skill_local_mats(cfg, types, tt):
-    """patch_auto：列出该技能下本地已发现的材料名（纯本地，不连超算）。"""
-    names, seen = [], set()
-    for t0 in (types or []):
-        if tt and t0.get("key") != tt:
-            continue
-        lr = t0.get("local_root")
-        if not lr:
-            continue
-        try:
-            _r, mats = discover_local(lr)
-        except Exception:   # noqa: BLE001
-            continue
-        for mm in mats:
-            if mm["name"] not in seen:
-                seen.add(mm["name"])
-                names.append(mm["name"])
-    return names
-
-
-def cmd_auto_skill(cfg, types, tt, arg):
-    """patch_auto：tf -tt <技能> auto [on|off] —— 对该技能下全部材料批量
-    开关项目级 auto_advance；on 时顺手把全局 tf.yaml 也打开。"""
-    names = _skill_local_mats(cfg, types, tt)
-    if not names:
-        print("没有在技能 %s 下发现任何材料（检查 project_roots / local_root）。"
-              % tt)
-        return 1
-    if arg is None:
-        print("全局 auto_advance：%s"
-              % ("开" if cfg.get("auto_advance") else "关"))
-        return cmd_auto_project(cfg, types, ",".join(names), tt, None)
-    if str(arg).strip().lower() in ("on", "1", "true", "开"):
-        if not cfg.get("auto_advance"):
-            cmd_auto(cfg, "on")          # 先开全局，避免下面误报"全局还是关的"
-            cfg["auto_advance"] = True
-    print("技能 %s：共 %d 个材料 → %s" % (tt, len(names), ", ".join(names)))
-    return cmd_auto_project(cfg, types, ",".join(names), tt, arg)
-
-
 def _proj_setting_path(lpath, tkey):
     """材料目录下该技能的 setting.yaml 路径（技能子目录优先，回落材料级）。"""
     if not lpath:
@@ -5081,15 +4975,6 @@ def main():
         print("程序: %s" % exe)
         print("包根: %s（setting/ = 默认模板，skill/ = 技能脚本）" % pkg)
         return
-    if len(sys.argv) == 1:   # patch_auto：纯 tf = 只报版本，不采集/不提交
-        print("taskflow (tf) version %s" % TF_VERSION)
-        print("程序: %s" % os.path.realpath(__file__))
-        print("")
-        print("  tf list      只读总表（不拉取、不提交）")
-        print("  tf status    刷新状态 + auto-fetch + auto-advance")
-        print("  tf watch     后台监控（-i 秒，-d 放后台）")
-        print("  tf -h        全部命令")
-        return
     p = argparse.ArgumentParser(prog="tf")
     p.add_argument("-tt", dest="tt")
     p.add_argument("-p", dest="proj")
@@ -5200,8 +5085,6 @@ def main():
         _arg = mat_toks[0] if mat_toks else None
         if a.proj:      # v1.9.9：带 -p 就只改这些材料/技能的 setting.yaml
             sys.exit(cmd_auto_project(cfg, types, a.proj, a.tt, _arg))
-        if a.tt:        # patch_auto：-tt 不带 -p = 该技能下全部材料
-            sys.exit(cmd_auto_skill(cfg, types, a.tt, _arg))
         sys.exit(cmd_auto(cfg, _arg))
 
     if cmd == "adopt":  # v1.5：接管手工整理的技能子目录（内部自做采集）
