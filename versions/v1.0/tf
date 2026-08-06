@@ -3148,7 +3148,8 @@ def _cmd_rerun(cfg, data, mname, jname, yes, force=False):
     if not mname:
         mats = [(t, m) for t in data["types"] for m in t["materials"]]
         if not yes:
-            ans = input("rerun 全部 %d 个材料（删除所有步骤目录并重新生成）？ [y/N] "
+            ans = input("rerun 全部 %d 个材料（各自清空整个工作目录，保留 POSCAR，"
+                        "含本地 result，从头重新生成）？ [y/N] "
                         % len(mats)).strip().lower()
             if ans not in ("y", "yes"):
                 print("已取消操作。")
@@ -3170,11 +3171,16 @@ def _cmd_rerun(cfg, data, mname, jname, yes, force=False):
 
 
 def rerun_project(cfg, t, m, yes):
-    dirs = [s["dir"] for s in m["steps"] if s["exists"]]
+    """整材料 rerun：清空整个 <材料>/<技能> 远程工作目录（只保留 POSCAR）
+    + 删本地 log/result，再从第一步从头生成提交。彻底从零，不留任何旧步骤
+    目录或结果。project_setting 在本地、不在工作目录内，故 BANDGAP 等参数与
+    模板保留不动（要连配置一起清用 tf clean --purge-config）。
+    注意：带 -j 的单步 rerun 走 do_rerun_step，仍只删该步，不受此影响。"""
     jobs = [s["job"] for s in m["steps"] if s.get("job")]
     if not yes:
-        ans = input("删除 %s(tt=%s) 的 %d 个步骤目录并从头重新生成？ [y/N] "
-                    % (m["name"], m["tt"], len(dirs))).strip().lower()
+        ans = input("清空 %s(tt=%s) 的整个 %s 工作目录（保留 POSCAR，含本地 result）"
+                    "并从头重新生成？ [y/N] "
+                    % (m["name"], m["tt"], m["tt"])).strip().lower()
         if ans not in ("y", "yes"):
             print("%s: 已跳过。" % m["name"])
             return False
@@ -3182,14 +3188,21 @@ def rerun_project(cfg, t, m, yes):
     if jobs:
         remote_scancel(cfg, [j["id"] for j in jobs], host=host)
         print("%s: scancel %s" % (m["name"], " ".join(j["id"] for j in jobs)))
-    if dirs:
-        rc, out = run_remote(cfg, "rm -rf -- " + " ".join(shlex.quote(d) for d in dirs),
-                             host=host)
+    if m.get("path"):
+        # 与 tf clean 同款：清空工作目录内一切、只留 POSCAR（重生成要用它）
+        line = ("[ -d %s ] && find %s -mindepth 1 -maxdepth 1 ! -name POSCAR "
+                "-exec rm -rf -- {} + || true"
+                % (shlex.quote(m["path"]), shlex.quote(m["path"])))
+        rc, out = run_remote(cfg, line, host=host)
         if rc != 0:
-            print("%s: 删除失败。%s" % (m["name"], out))
+            print("%s: 清空工作目录失败。%s" % (m["name"], out))
             return False
-        print("%s: 已删除 %d 个步骤目录" % (m["name"], len(dirs)))
-    log_action(m, "rerun project（%d 个步骤目录）" % len(dirs))
+        print("%s: 已清空工作目录（保留 POSCAR）" % m["name"])
+    for d in (m.get("log_dir"), m.get("result_dir")):   # 本地 log/result 一并删
+        if d and os.path.isdir(d):
+            shutil.rmtree(d, ignore_errors=True)
+            print("%s: 已删本地 %s" % (m["name"], d))
+    log_action(m, "rerun project（清空整个工作目录，保留 POSCAR）")
     _scancel_clear(m)   # v1.4：整材料推倒重来，清掉全部 stop 标记
     if not m["steps"]:
         print("%s: 该类型没有配置步骤。" % m["name"])
@@ -3200,7 +3213,6 @@ def rerun_project(cfg, t, m, yes):
     s0["job"] = None
     return do_submit(cfg, t, m, s0, force=False, gen_first=True, contcar_cp=False,
                      tag="rerun " + tag_of(m, first))
-
 
 def auto_advance(cfg, data):
     """status 时自动推进可开始的步骤（全局 tf.yaml 写 auto_advance: true 开启；

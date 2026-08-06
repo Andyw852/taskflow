@@ -25,6 +25,11 @@ CONF_NAME = "step.conf"
 _COMMENT = re.compile(r"\s+[#!].*$")
 _SECTION = re.compile(r"^\[([A-Za-z0-9_.\-]+)\]$")
 
+# 驱动层保留键：写在 [params] 里、供 tf 决定步骤图（如 BANDGAP=pbe|hse 增删
+# 整段 HSE），gen 脚本本身不消费。校验白名单时无条件放行，避免各 gen 脚本
+# 都误报"不认识的键"。新增工作流级开关往这里加即可。
+RESERVED_PARAMS = frozenset({"BANDGAP"})
+
 
 def _strip(line):
     s = line.rstrip()
@@ -138,7 +143,7 @@ class StepConf(object):
         self._m, self._spec, self.path = merged, spec, path
         self.params = {}
         raw = {k.upper(): v for k, v, _ in merged.get("params", [])}
-        unknown = sorted(set(raw) - {k.upper() for k in spec})
+        unknown = sorted(set(raw) - {k.upper() for k in spec} - RESERVED_PARAMS)
         if unknown:
             raise SystemExit("[ERROR] %s 的 [params] 里有本脚本不认识的键：%s\n"
                              "        可用键：%s"

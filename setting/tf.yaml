@@ -16,7 +16,7 @@ project_roots:
 
 # 全自动流水线开关（默认关）。开 = 每次 tf / tf watch 自动提交可开始的步骤。
 # 单个项目想单独关闭，在它的 project_setting/setting.yaml 写 auto_advance: false
-auto_advance: false
+auto_advance: true
 
 # 后台自动监控（零输入全自动，v1.10）：
 # auto_watch: true —— 敲任何 tf 命令都会顺带确保后台监控在跑（没在跑就拉起）。

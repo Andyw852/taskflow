@@ -6,3 +6,8 @@ versions/v1.0/tf.bak_*
 setting/.tf_watch.log
 *.bak
 *.bak_*
+taskflow_bandgap_unify.patch
+*.bak
+apply_fixes.py
+*_unify.patch
+fix_*.patch
