@@ -995,6 +995,17 @@ def _load_manifest(path):
     skel["_skill_requires"] = man.get("requires") or {}
     chk = man.get("checks", "checks.py")
     cp = os.path.join(sdir, str(chk)) if chk else None
+    # patch_common_opt：公共判据文件随 _common 重构挪进了公共步骤子目录（opt/ 等），
+    # 但老 skill.yaml 仍写重构前路径（../_common/checks_relax.py）。字面路径找不到、
+    # 且指向公共池时，按 basename 在 _common/*/ 里兜底一层——与 find_asset /
+    # dim_common 加载里 <pool>/*/ 的处理保持一致，skill.yaml 一行都不用改。
+    if cp and chk and not os.path.isfile(cp) and COMMON_POOL_DIR in str(chk):
+        _pool = os.path.normpath(os.path.join(sdir, os.path.dirname(str(chk))))
+        for _hit in sorted(glob.glob(os.path.join(_pool, "*",
+                                                   os.path.basename(str(chk))))):
+            if os.path.isfile(_hit):
+                cp = _hit
+                break
     skel["_skill_checks"] = cp if (cp and os.path.isfile(cp)) else None
     return key, skel
 

@@ -16,7 +16,7 @@ R.run(
     SCRIPT_NAME="gen_step1_std_opt.py",
     NEXT_STEP="gen_step2_elastic.py",
     STAGE_MODE="in_job",            # 一个作业内 a->b->c；要恢复"3D 单段"就写 "single"
-    CELL_POLICY="standard",         # 弹性张量定义在惯用晶轴对齐的笛卡尔系里
+    CELL_POLICY="primitive",        # 默认原胞（四技能统一）；需惯用晶轴取向(C_ij/输运张量)时，在该项目 step.conf 设 CELL_POLICY=standard
     STD_CELL="primitive_standard",  # 或 "conventional"
     VACUUM_AXIS_POLICY="rotate",    # 2D 真空不在 c 时自动 3-轮换（原 elastic 行为）
     MOL_BRANCH=True,                # step1 支持 0D；下游 step2_elastic 会用 require_dim 拦住

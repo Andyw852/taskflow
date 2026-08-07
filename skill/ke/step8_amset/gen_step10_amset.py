@@ -537,12 +537,17 @@ def main():
     write_settings(out, eps_inf, eps_static, gap, elastic,
                    is_2d=is_2d, c_len=c_len)
 
+    # tf 把 submit_amset.tpl 与本脚本一起推到 gen 运行目录，但按原名推、不会改成
+    # submit.sh；本步自己把它渲染成 out/submit.sh（维度步靠各自 gen 的 render，这里同理）。
+    here = Path(__file__).resolve().parent
+    tpl = next((p for p in (here / "submit_amset.tpl", cwd / "submit_amset.tpl")
+                if p.is_file()), None)
+    if tpl is None:
+        sys.exit("[ERROR] 找不到 submit_amset.tpl（gen_need 里要有它，且应随 gen 脚本一起推送）")
     submit = out / "submit.sh"
-    if not submit.is_file():
-        sys.exit("[ERROR] submit.sh 未推送到 %s（gen_need 里要有 submit_amset.tpl）" % out)
     jobname = ("%s-ke-%s" % (cwd.name, STEP_LABEL)) if not _HAS_KC \
         else kc.new_jobname(cwd, STEP_LABEL)
-    text = submit.read_text(encoding="utf-8")
+    text = tpl.read_text(encoding="utf-8")
     text = text.replace("{{JOBNAME}}", jobname).replace("{{AMSET_CMD}}", AMSET_CMD)
     submit.write_text(text, encoding="utf-8", newline="\n")
     print("[DONE] %s：settings.yaml + 软链就绪，提交后 amset run 产出 transport.json"

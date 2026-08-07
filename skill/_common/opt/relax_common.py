@@ -301,6 +301,13 @@ KNOWN_PLACEHOLDERS = {"SYSTEM", "ENCUT", "GGA", "VDW_LINE", "JOBNAME"}
 #   mol_common 不再自己 stepconf.load()，改从 STEP_PARAMS 取。
 CONF_SPEC = {
     "FUNC": (FUNC_DEFAULT, "str"),
+    # 晶胞策略：step.conf 可覆盖技能默认（默认 None = 不设置，用技能 R.run 默认）。
+    #   CELL_POLICY: primitive | standard | none
+    #   STD_CELL:    primitive_standard | conventional （仅 CELL_POLICY=standard 生效）
+    #   VACUUM_AXIS_POLICY: error | rotate （仅 2D 生效）
+    "CELL_POLICY": (None, "str"),
+    "STD_CELL": (None, "str"),
+    "VACUUM_AXIS_POLICY": (None, "str"),
     "STALL_MINUTES": (60, "int"),        # run_relax.sh 看门狗阈值
     "MOL_KPOINTS": ("gamma", "str"),     # 以下 MOL_* 由 mol_common 使用
     "MOL_ISPIN": ("auto", "str"),
@@ -384,6 +391,48 @@ def apply_step_params():
     v = STEP_PARAMS.get("STALL_MINUTES")
     if v is not None:
         globals()["STALL_MIN"] = int(v)
+
+
+# step.conf 可覆盖的晶胞键 -> 合法值集合
+_CELL_KEYS = {
+    "CELL_POLICY": {"primitive", "standard", "none"},
+    "STD_CELL": {"primitive_standard", "conventional"},
+    "VACUUM_AXIS_POLICY": {"error", "rotate"},
+}
+
+
+def apply_cell_params():
+    """step.conf 覆盖晶胞策略（CELL_POLICY / STD_CELL / VACUUM_AXIS_POLICY），
+    含合法值校验与护栏告警；返回一行 provenance（无论是否覆盖都返回，供留痕）。
+
+    优先级：step.conf 显式值 > 技能 R.run 默认。必须在 ensure_cell() 之前调用。
+    晶胞与下游步骤强耦合，偏离技能默认时高声告警，但不阻断（尊重用户判断）。"""
+    g = globals()
+    skill_default = {k: g[k] for k in _CELL_KEYS}
+    changed = []
+    for key, allowed in _CELL_KEYS.items():
+        v = STEP_PARAMS.get(key)
+        if not v:                     # None（未设置）或空串 -> 用技能默认
+            continue
+        v = str(v).strip().lower()
+        if v not in allowed:
+            sys.exit("[ERROR] step.conf 的 %s=%r 非法，只允许：%s"
+                     % (key, v, ", ".join(sorted(allowed))))
+        if v != str(g[key]).strip().lower():
+            g[key] = v
+            changed.append((key, skill_default[key], v))
+    if changed:
+        print("[!!] 晶胞策略被 step.conf 覆盖（偏离本技能默认）：")
+        for k, old, new in changed:
+            print("     %s: 技能默认 %r -> step.conf %r" % (k, old, new))
+        print("     警告：晶胞取向/原胞化与下游步骤强耦合——")
+        print("       · 能带：高对称路径定义在原胞倒空间，改成 standard/none 可能错标路径；")
+        print("       · 弹性：C_ij 定义在标准取向，改成 primitive/none 会得到旋转过的张量；")
+        print("       · AMSET/电子热导：需少原子原胞做密网格插值，改成 none(超胞) 会折叠 BZ。")
+        print("     仅在你明确知道后果时使用；最终生效值已写入 %s。" % METHOD_FILE)
+    src = "step.conf 覆盖" if changed else "技能默认"
+    return ("CELL_POLICY=%s STD_CELL=%s VACUUM_AXIS_POLICY=%s (%s)"
+            % (g["CELL_POLICY"], g["STD_CELL"], g["VACUUM_AXIS_POLICY"], src))
 
 
 def validate_user_config():
@@ -1310,6 +1359,12 @@ def main():
             mol_common.generate(cwd, globals())
             return
 
+    # ---- 弛豫阶段先解析（与 FUNC 共用同一 step 名读 step.conf）----
+    global FUNC
+    stage, outdir_name, src_poscar = resolve_stage(cwd)
+    # ---- 晶胞策略：step.conf 可覆盖技能默认（护栏 + provenance），必须在改胞前 ----
+    load_step_params(outdir_name)
+    cell_note = apply_cell_params()
     prim_note = ensure_cell(cwd / "POSCAR")
 
     # ---- 维度判定 + 按维度选模板（2D/3D 各一套，缺失回退到无后缀旧名）----
@@ -1322,9 +1377,7 @@ def main():
         print("[WARN] 2D 体系但只找到了无后缀 incar.tpl —— 请确认它就是 2D 模板"
               "（含 c 轴约束），建议改名为 incar_2d.tpl 并补一套 *_3d.tpl")
 
-    # ---- 泛函：step.conf 说了算（见文件顶部 FUNC_DEFAULT 的说明）----
-    global FUNC
-    stage, outdir_name, src_poscar = resolve_stage(cwd)
+    # ---- 泛函：step.conf 说了算（stage / step.conf 已在改胞前解析）----
     FUNC, func_src = resolve_func(incar_tpl, outdir_name)
     apply_step_params()
     validate_user_config()
@@ -1430,7 +1483,8 @@ def main():
               "SOC 会在 step3/step4 自动打开")
 
     # 记录方法，供后续步骤继承
-    write_method_file(outdir / METHOD_FILE, label, formula, prim_note,
+    cell_prov = cell_note if not prim_note else (cell_note + "\n" + prim_note)
+    write_method_file(outdir / METHOD_FILE, label, formula, cell_prov,
                       mag_line=f"MAG={'magnetic' if magnetic else 'nonmag'}",
                       dim_line=f"DIM={dim.upper()}")
     print(f"[OK] {METHOD_FILE}")

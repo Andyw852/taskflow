@@ -15,7 +15,7 @@ R.run(
     SCRIPT_NAME="gen_step1_std_opt.py",
     NEXT_STEP="gen_step2_static.py",
     STAGE_MODE="in_job",
-    CELL_POLICY="standard",
+    CELL_POLICY="primitive",        # 默认原胞（四技能统一）；需惯用晶轴取向(C_ij/输运张量)时，在该项目 step.conf 设 CELL_POLICY=standard
     STD_CELL="primitive_standard",
     VACUUM_AXIS_POLICY="rotate",
     MOL_BRANCH=True,                # step1 支持 0D；AMSET/形变势步骤用 require_dim 拦住
