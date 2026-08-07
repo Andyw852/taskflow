@@ -1,5 +1,5 @@
 # phono3py 位移超胞单点取力（3D）。声子硬约束：ISYM=0（位移破缺对称，勿对称化力）、
-# LREAL=.FALSE.（倒空间投影，力无噪声）、EDIFF=1E-8、PREC=Accurate。
+# LREAL=.FALSE.（倒空间投影，力无噪声）、EDIFF=1E-8、ADDGRID、PREC=Accurate。
 SYSTEM  = {{SYSTEM}}
 ISTART  = 0
 ICHARG  = 2
@@ -8,6 +8,7 @@ GGA     = {{GGA}}
 PREC    = Accurate
 ENCUT   = {{ENCUT}}
 EDIFF   = 1E-8
+ADDGRID = .TRUE.
 LREAL   = .FALSE.
 LASPH   = .TRUE.
 ALGO    = Normal

@@ -1,0 +1,38 @@
+{
+  "created": "20260807-134546",
+  "layout": "per_step",
+  "moves": [
+    {
+      "from": "relax_common.py",
+      "to": "opt/relax_common.py"
+    },
+    {
+      "from": "checks_relax.py",
+      "to": "opt/checks_relax.py"
+    },
+    {
+      "from": "dim_common.py",
+      "to": "opt/dim_common.py"
+    },
+    {
+      "from": "mol_common.py",
+      "to": "opt/mol_common.py"
+    },
+    {
+      "from": "check_common.py",
+      "to": "opt/check_common.py"
+    },
+    {
+      "from": "stepconf.py",
+      "to": "opt/stepconf.py"
+    },
+    {
+      "from": "templates/incar_0d.tpl",
+      "to": "opt/templates/incar_0d.tpl"
+    },
+    {
+      "from": "templates/submit_jzzn_vaspstd_0d.tpl",
+      "to": "opt/templates/submit_jzzn_vaspstd_0d.tpl"
+    }
+  ]
+}

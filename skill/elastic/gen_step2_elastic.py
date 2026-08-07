@@ -253,7 +253,9 @@ def main():
         "NCORE":   NCORE_ELASTIC,
         "LWAVE":   ".FALSE.",
         "LCHARG":  ".FALSE.",
-        "ADDGRID": ".TRUE.",
+        # patch_remove_addgrid：ADDGRID 已去掉（VASP 默认 .FALSE.，
+        # 官方称用户反馈矛盾，MP 校验器要求必须 False；它还会改变
+        # CHGCAR 网格，导致与 step1 之间无法复用电荷密度）
         "LREAL":   ".FALSE.",
     }
     incar_set.update({k.upper(): v for k, v in INCAR_SET_EXTRA.items()})
