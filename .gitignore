@@ -11,3 +11,6 @@ taskflow_bandgap_unify.patch
 apply_fixes.py
 *_unify.patch
 fix_*.patch
+# patch_standalone_skills：补丁备份不进仓库
+*.bak.*
+.patch_trash/

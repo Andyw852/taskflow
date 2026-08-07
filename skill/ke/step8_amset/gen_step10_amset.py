@@ -489,8 +489,36 @@ def write_settings(out: Path, eps_inf, eps_static, gap, elastic,
           % (eps_inf, eps_static, gap, ela))
 
 
+# patch_dim_guard：本步不跑 VASP、也不解析结构，所以没有 dim 变量可用。
+# 直接从 step1 的 workflow_method.txt 读 DIM=，0D 就带原因退出，
+# 免得 -f 强推时抛一句看不懂的"缺 xxx.h5"。
+_STEP1_CANDS = ("step1_opt", "step1_std_opt",
+                "step1c_PBE_opt", "step1b_PBE_opt", "step1a_PBE_opt")
+
+
+def _guard_not_0d(cwd, step_name, why):
+    from pathlib import Path as _P
+    for name in _STEP1_CANDS:
+        mf = _P(cwd) / name / "workflow_method.txt"
+        if not mf.is_file():
+            continue
+        for ln in mf.read_text(errors="ignore").splitlines():
+            if ln.strip().upper().startswith("DIM="):
+                dim = ln.split("=", 1)[1].strip().lower()
+                if dim == "0d":
+                    sys.exit("[ERROR] %s 不支持 0D 体系。\n"
+                             "        原因：%s\n"
+                             "        支持的维度：2D, 3D\n"
+                             "        若判定有误，检查 %s 的 DIM=。"
+                             % (step_name, why, mf))
+                return
+        return
+
+
 def main():
     cwd = Path.cwd()
+    _guard_not_0d(cwd, "step8_amset",
+                  "载流子输运建立在能带色散和布里渊区积分上，孤立分子两者都没有")
     out = cwd / OUTDIR_NAME
     out.mkdir(exist_ok=True)
     link(out, cwd / WAVE_DIR / "wavefunction.h5", "wavefunction.h5")

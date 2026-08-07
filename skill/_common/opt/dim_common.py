@@ -287,20 +287,10 @@ def filter_kpath_2d(kpt_coords, segments, axis=2, tol=1e-3):
 #     require_dim(dim, ("2d", "3d"), "step3_PBE_WAVECAR",
 #                 why="高对称路径定义在晶体倒空间，孤立分子没有能带")
 # 不支持就明确报错并说清原因，而不是让后面某个函数抛一句看不懂的模板缺失。
-def require_dim(dim, supported, step_name, why=None):
-    dim = str(dim).lower()
-    supported = [str(x).lower() for x in supported]
-    if dim in supported:
-        return
-    msg = ["[ERROR] %s 不支持 %s 体系（本步骤只支持 %s）。"
-           % (step_name, dim.upper(), "/".join(x.upper() for x in supported))]
-    if why:
-        msg.append("        原因：%s" % why)
-    msg.append("        若判定有误，检查上一步 workflow_method.txt 的 DIM= "
-               "或结构的真空层厚度。")
-    raise SystemExit("\n".join(msg))
-
 # ---------------------------------------------------------------- 0D 守卫
+# patch_dim_guard：本函数原先在这个文件里定义了两遍（后者覆盖前者），
+# 已合并为一个。合并时保留了被覆盖那版的大小写归一化——否则调用方传
+# "2D"（大写）会被误判成不支持。
 def require_dim(dim, supported, step="本步骤", why=None):
     """维度守卫：dim 不在 supported 里就带原因退出。
 
@@ -311,12 +301,16 @@ def require_dim(dim, supported, step="本步骤", why=None):
     为什么要显式守卫：没有它的话，0D 结构会一路往下走到 resolve_tpl，
     抛一句"找不到 incar_0d.tpl"——看起来像缺文件，其实是这个物理量不存在。
     """
+    dim = str(dim).lower()
+    supported = [str(x).lower() for x in supported]
     if dim in supported:
         return
     msg = ["[ERROR] %s 不支持 %s 体系。" % (step, dim.upper())]
     if why:
         msg.append("        原因：%s" % why)
     msg.append("        支持的维度：%s" % ", ".join(x.upper() for x in supported))
+    msg.append("        若判定有误，检查上一步 workflow_method.txt 的 DIM= "
+               "或结构的真空层厚度。")
     if dim == "0d":
         msg.append("        （0D = POSCAR 有 >=2 个方向的真空，判定阈值 VACUUM_MIN=%.1f Å）"
                    % VACUUM_MIN)

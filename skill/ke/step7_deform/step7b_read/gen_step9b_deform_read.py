@@ -22,10 +22,38 @@ AMSET_ENV_SRC = "source /public/home/wangchao/miniconda3/etc/profile.d/conda.sh 
 # =================================================================
 
 
+# patch_dim_guard：本步不跑 VASP、也不解析结构，所以没有 dim 变量可用。
+# 直接从 step1 的 workflow_method.txt 读 DIM=，0D 就带原因退出，
+# 免得 -f 强推时抛一句看不懂的"缺 xxx.h5"。
+_STEP1_CANDS = ("step1_opt", "step1_std_opt",
+                "step1c_PBE_opt", "step1b_PBE_opt", "step1a_PBE_opt")
+
+
+def _guard_not_0d(cwd, step_name, why):
+    from pathlib import Path as _P
+    for name in _STEP1_CANDS:
+        mf = _P(cwd) / name / "workflow_method.txt"
+        if not mf.is_file():
+            continue
+        for ln in mf.read_text(errors="ignore").splitlines():
+            if ln.strip().upper().startswith("DIM="):
+                dim = ln.split("=", 1)[1].strip().lower()
+                if dim == "0d":
+                    sys.exit("[ERROR] %s 不支持 0D 体系。\n"
+                             "        原因：%s\n"
+                             "        支持的维度：2D, 3D\n"
+                             "        若判定有误，检查 %s 的 DIM=。"
+                             % (step_name, why, mf))
+                return
+        return
+
+
 def main():
     cwd = Path.cwd()
     out = cwd / OUTDIR_NAME
     out.mkdir(exist_ok=True)
+    _guard_not_0d(cwd, "step7b_deform_read",
+                  "形变势是能带对应变的响应，孤立分子没有能带色散")
     dfm = cwd / DEFORM_DIR
     if not dfm.is_dir():
         sys.exit("[ERROR] 找不到 %s（形变单点没生成？）" % dfm)

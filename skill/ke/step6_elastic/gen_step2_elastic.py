@@ -38,6 +38,20 @@ NFREE   = "4"          # 每个独立应变的差分点数：2 或 4（4=四点�
 EDIFF   = "1E-7"       # 电子自洽收敛（弹性对精度敏感）
 PREC    = "Accurate"
 NCORE_ELASTIC = "1"    # 有限差分并行安全值（=NPAR ranks）；KPAR 继承 step1
+# --- patch_elastic_2d -----------------------------------------------------
+# KBLOWUP=.FALSE. 绕开 IBRION=6+ISIF=3 的罢工：
+#   "RE_READ_KPOINTS: the new IBZ does not contain all k-points of the
+#    original IBZ ... I REFUSE TO CONTINUE WITH THIS SICK JOB"
+# 形变降低对称性 -> 新 IBZ 需要更多 k 点 -> VASP 检查到覆盖不全就退出。
+# 这是 VASP 开发者对同一报错给的方案，且保留 ISYM 的对称性约化。
+# 2D 尤其容易中：force_kz1 把 N3 压成 1，而 IBRION=6 会施加含 c 轴的剪切，
+# c 被倾斜后倒格矢变化 + 第三方向只有一个 k 点，这个退化组合几乎必然触发。
+# 设为 None 则不写这一行（回到打补丁前的行为）。
+KBLOWUP = ".FALSE."
+# 兜底：KBLOWUP 仍不管用时改成 "0" 强制关对称。代价很大——IBRION=6 会对
+# 全部 3N 个自由度做有限差分（20 原子 + NFREE=4 就是 240+ 个位移），
+# 只在确认 KBLOWUP 无效后再用。None = 不强制，沿用原有的 ISYM 继承逻辑。
+ISYM_FORCE = None
 
 # ---- KPOINTS（VASPKIT；弹性比静态更密）----
 RUN_VASPKIT = True
@@ -211,6 +225,11 @@ def main():
     if dim == "2d":
         print("[..] 2D：删除 IOPTCELL（IBRION=6 需对面内所有分量施应变）；"
               "面内刚度 N/m 换算在 step3 完成")
+        # patch_elastic_2d：提醒两件 2D 特有的事
+        print("[..] 2D：KPOINTS 第三方向为 1 + IBRION=6 会施加含 c 轴的剪切，"
+              "这是 RE_READ_KPOINTS 罢工的高发组合，已写 KBLOWUP=%s" % KBLOWUP)
+        print("[..] 2D：OUTCAR 里 C33/C44/C55 对 slab 无物理意义，"
+              "只有面内 C11/C12/C22/C66 可用（step3 会自动抽取并换算 N/m）")
 
     # POTCAR 继承 step1
     potcar_src = step1 / POTCAR_FILE
@@ -259,12 +278,18 @@ def main():
         # CHGCAR 网格，导致与 step1 之间无法复用电荷密度）
         "LREAL":   ".FALSE.",
     }
+    if KBLOWUP is not None:
+        incar_set["KBLOWUP"] = KBLOWUP        # patch_elastic_2d
     incar_set.update({k.upper(): v for k, v in INCAR_SET_EXTRA.items()})
     # ISYM 不强灌（v2.0 审查修复）：LDIPOL/LCALCPOL 打开时必须 0（偶极/铁电体系，
     # 对称性与偶极校正冲突）；step1 显式设过就继承；都没设才补 2
     # （IBRION=6 开对称性可减少一半形变计算量）
     base_kv = {k.upper(): str(v) for k, v in items}
-    if base_kv.get("LDIPOL", "").upper() in (".TRUE.", "T", "TRUE", "1") or \
+    if ISYM_FORCE is not None:                 # patch_elastic_2d：兜底
+        incar_set["ISYM"] = str(ISYM_FORCE)
+        print("[WARN] ISYM_FORCE=%s：强制关/改对称性。IBRION=6 会对全部 3N "
+              "自由度做有限差分，耗时大幅上升。" % ISYM_FORCE)
+    elif base_kv.get("LDIPOL", "").upper() in (".TRUE.", "T", "TRUE", "1") or \
        base_kv.get("LCALCPOL", "").upper() in (".TRUE.", "T", "TRUE", "1"):
         incar_set["ISYM"] = "0"
     elif "ISYM" not in base_kv:
@@ -272,7 +297,9 @@ def main():
     incar_remove = set(INCAR_REMOVE_BASE) | {k.upper() for k in INCAR_REMOVE_EXTRA}
     text = build_incar(items, incar_remove, incar_set)
     (step2 / "INCAR").write_text(text, encoding="utf-8", newline="\n")
-    print(f"[OK] INCAR（IBRION=6, POTIM={args.potim}, NFREE={args.nfree}, NCORE={NCORE_ELASTIC}）")
+    print(f"[OK] INCAR（IBRION=6, POTIM={args.potim}, NFREE={args.nfree}, "
+          f"NCORE={NCORE_ELASTIC}, KBLOWUP={KBLOWUP}, "
+          f"ISYM={incar_set.get('ISYM', '继承 step1')}）")
 
     if (step1 / METHOD_FILE).exists():
         shutil.copyfile(step1 / METHOD_FILE, step2 / METHOD_FILE)
