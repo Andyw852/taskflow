@@ -18,5 +18,6 @@ R.run(
     NEXT_STEP="gen_step2_static.py",
     STAGE_MODE="in_job",          # 一个作业内跑完 a->b->c，排一次队
     CELL_POLICY="primitive",      # 能带的高对称路径定义在原胞倒空间
+    VACUUM_AXIS_POLICY="rotate",  # 2D 真空不在 c 时自动 3-轮换（与 elastic/ke 统一）
     MOL_BRANCH=True,              # 支持 0D 分子（M@C60 这类）
 )

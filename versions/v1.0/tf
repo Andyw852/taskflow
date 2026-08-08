@@ -1174,7 +1174,8 @@ def scan_project_configs(roots):
             print("警告：project_roots 里的 %s 不存在，跳过。" % r, file=sys.stderr)
             continue
         for pat in ("project_setting/tf_*.yaml", "*/project_setting/tf_*.yaml",
-                    "*/*/project_setting/tf_*.yaml"):  # 材料级：C20/qHPC20/project_setting
+                    "*/*/project_setting/tf_*.yaml",
+                    "*/*/*/project_setting/tf_*.yaml"):  # 材料级 C20/qHPC20/；+嵌套材料(jzz/)+skill_subdir(band/) 到深度3
             for p in sorted(_glob.glob(os.path.join(r, pat))):
                 name = os.path.basename(p)[len("tf_"):-len(".yaml")]
                 if name in seen and seen[name] != p:
@@ -3434,6 +3435,11 @@ def auto_advance(cfg, data):
     for t in data["types"]:
         for m in t["materials"]:
             st = (m.get("ps") or {}).get("setting") or {}
+            # 未为本技能初始化的材料（无 project_setting -> ps.dir 为空）不自动推进：
+            # 否则 band/ke 共用数据根时，ke 会把只 init 了 band 的材料也自动跑起来（误提交）。
+            if not (m.get("ps") or {}).get("dir"):
+                _skipped.append("%s[%s]（未 init 本技能）" % (m["name"], m["tt"]))
+                continue
             if st.get("auto_advance") is False:
                 _skipped.append("%s[%s]" % (m["name"], m["tt"]))
                 continue
