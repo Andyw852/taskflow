@@ -3006,6 +3006,12 @@ def _start_ready(cfg, t, m, force, incl_scancel=False):
     没打过 DAG 补丁、或技能没写 needs 时 actives 里只会有一个，
     行为退化成原来的"只交 active"。
     """
+    # 未为本技能初始化的材料（无 project_setting -> ps.dir 为空）不 start：
+    # 与 auto_advance 一致，避免共用数据根时 start 误跑没 init 的材料。
+    if not (m.get("ps") or {}).get("dir"):
+        print("跳过 %s[%s]：未 init 本技能（先 tf -tt %s -p %s init）。"
+              % (m["name"], m["tt"], m["tt"], m["name"]))
+        return 0
     fails = 0
     ready = m.get("actives")
     if ready is None:
@@ -3087,6 +3093,8 @@ def cmd_start(cfg, data, mname, jname, force, incl_scancel=False):
     fails = 0
     if jname and not mname:  # v3.11：对全部材料只 start 指定步骤
         for t, m, s in step_targets(data, jname):
+            if not (m.get("ps") or {}).get("dir"):
+                continue   # 未 init 本技能的材料不 start
             if s["kind"] == "OK" or s.get("job"):
                 continue
             if s["kind"] == "SCANCEL" and not incl_scancel:
